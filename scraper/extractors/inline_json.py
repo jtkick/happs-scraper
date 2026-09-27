@@ -188,7 +188,7 @@ def _find_candidates(data: Any, depth: int = 0) -> Iterator[tuple[int, dict]]:
         for v in data.values():
             yield from _find_candidates(v, depth + 1)
     elif isinstance(data, list):
-        for item in data[:20]:
+        for item in data[:200]:
             yield from _find_candidates(item, depth + 1)
 
 
@@ -285,3 +285,24 @@ def extract(html: str, base_url: str) -> Optional[dict]:
     result = _map_fields(best_obj)
     logger.debug("inline_json: score=%d fields=%s from %s", best_score, list(result.keys()), base_url)
     return result or None
+
+
+def extract_all(html: str, base_url: str) -> list[dict]:
+    """
+    Return every inline event object that has at least a title and a start
+    date — the shape of a listing page's embedded data (calendar widgets,
+    Next.js page props). Venue/organizer objects are excluded by that rule.
+    """
+    results: list[dict] = []
+    seen: set[tuple] = set()
+    for attrs, content in _iter_scripts(html):
+        for parsed in _json_from_script(attrs, content):
+            for _, obj in _find_candidates(parsed):
+                mapped = _map_fields(obj)
+                key = (mapped.get('title'), mapped.get('start_datetime'))
+                if not all(key) or key in seen:
+                    continue
+                seen.add(key)
+                results.append(mapped)
+    logger.debug("inline_json: %d complete events from %s", len(results), base_url)
+    return results

@@ -3,6 +3,7 @@
 __pycache__/
 .scrapy/
 dedup.db
+etags.db
 *.log
 .venv/
 venv/

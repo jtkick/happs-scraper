@@ -23,7 +23,7 @@ AUTOTHROTTLE_MAX_DELAY = 15.0
 AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0   # one outstanding request per domain
 AUTOTHROTTLE_DEBUG = False
 
-CONCURRENT_REQUESTS = 8
+CONCURRENT_REQUESTS = 16                # spread across many domains
 CONCURRENT_REQUESTS_PER_DOMAIN = 1      # never hammer a single site
 
 # ── Headers ───────────────────────────────────────────────────────────────────
@@ -55,12 +55,34 @@ DOWNLOADER_MIDDLEWARES = {
     'scraper.middlewares.RotatingUserAgentMiddleware': 400,
 }
 
+# ── JavaScript rendering (fallback only) ──────────────────────────────────────
+# Requests are rendered in headless Chromium only when meta['playwright'] is
+# set (sites the spider learned need it). Requires `pip install scrapy-playwright`
+# and `playwright install chromium`; without them such sites are reported as
+# `needs_js` in their crawl runs.
+
+PLAYWRIGHT_ENABLED = os.getenv('PLAYWRIGHT_ENABLED', 'false').lower() == 'true'
+if PLAYWRIGHT_ENABLED:
+    DOWNLOAD_HANDLERS = {
+        'http':  'scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler',
+        'https': 'scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler',
+    }
+    PLAYWRIGHT_BROWSER_TYPE = 'chromium'
+    PLAYWRIGHT_MAX_CONTEXTS = 1
+    PLAYWRIGHT_MAX_PAGES_PER_CONTEXT = 2
+
+# ── Generic spider budgets (per source, per run) ──────────────────────────────
+
+GENERIC_MAX_LISTING_PAGES = 15   # events pages + their pagination
+GENERIC_MAX_DETAIL_PAGES  = 60
+
 # ── Pipelines (ordered by priority) ──────────────────────────────────────────
 
 ITEM_PIPELINES = {
-    'scraper.pipelines.NormalizePipeline':      100,
+    'scraper.pipelines.NormalizePipeline':        100,
+    'scraper.pipelines.ValidatePipeline':         150,
     'scraper.pipelines.FingerprintDedupPipeline': 200,
-    'scraper.pipelines.APISubmitPipeline':      300,
+    'scraper.pipelines.APISubmitPipeline':        300,
 }
 
 # ── App settings ──────────────────────────────────────────────────────────────
@@ -71,7 +93,15 @@ HAPPS_SCRAPER_TOKEN = os.getenv('HAPPS_SCRAPER_TOKEN', '')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 AI_EXTRACTION_ENABLED = bool(ANTHROPIC_API_KEY)
 
-DEDUP_DB_PATH = os.getenv('DEDUP_DB_PATH', 'dedup.db')
+# Local ETag / Last-Modified cache for ConditionalFetchMiddleware. Optional:
+# losing it (e.g. on a fresh CI runner) only costs full re-downloads.
+ETAG_DB_PATH = os.getenv('ETAG_DB_PATH', 'etags.db')
+
+# Events scoring below this confidence are held for review in the backend.
+REVIEW_THRESHOLD = float(os.getenv('REVIEW_THRESHOLD', '0.7'))
+
+# IANA zone for naive page datetimes when the source has none (e.g. ad-hoc -a url=… runs).
+DEFAULT_EVENT_TIMEZONE = os.getenv('DEFAULT_EVENT_TIMEZONE') or None
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

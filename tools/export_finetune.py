@@ -15,8 +15,9 @@ Options:
                       (default: 2 — must have at least title + start_datetime)
     --stats           Print per-fixture stats before writing
 
-The prompt in each record exactly matches the prompt in scraper/extractors/ai.py
-so fine-tuned models are a drop-in replacement for the live Haiku calls.
+The system prompt, user turn and output shape are imported from
+scraper/extractors/ai.py, so fine-tuned models are a drop-in replacement for
+the live Haiku calls. `evidence` comes from the fixture when recorded.
 """
 from __future__ import annotations
 import argparse
@@ -28,33 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 FIXTURES_DIR = Path(__file__).parent.parent / 'tests' / 'fixtures'
 
-# Must stay in sync with scraper/extractors/ai.py
-_PROMPT = """\
-Extract event information from the text below.
-Return ONLY a valid JSON object with these keys (use null for missing fields):
-
-{
-  "title": string,
-  "description": string,
-  "start_datetime": "ISO-8601 datetime string with timezone, e.g. 2025-06-15T19:00:00-05:00",
-  "end_datetime": "ISO-8601 or null",
-  "location_title": string or null,
-  "location_address": string or null,
-  "ticket_price": number (USD) or null,
-  "ticket_url": string or null,
-  "url": string or null,
-  "image_url": string or null
-}
-
-Text:
-"""
-
-# Only the keys the AI extractor is asked to return (matches the prompt above)
-_AI_OUTPUT_KEYS = [
-    'title', 'description', 'start_datetime', 'end_datetime',
-    'location_title', 'location_address',
-    'ticket_price', 'ticket_url', 'url', 'image_url',
-]
+from scraper.extractors.ai import OUTPUT_KEYS, _SYSTEM, build_user_message
 
 
 def _load_fixtures() -> list[dict]:
@@ -74,6 +49,7 @@ def _load_fixtures() -> list[dict]:
             'url':        data.get('url', ''),
             'clean_text': text.read_text().strip(),
             'expected':   data.get('expected', {}),
+            'expected_events': data.get('expected_events', []),
             'notes':      data.get('notes', ''),
         })
     return items
@@ -107,7 +83,8 @@ def main():
     with out_path.open('w') as f:
         for fx in fixtures:
             expected = fx['expected']
-            n_fields = _non_null_count(expected)
+            n_fields = min((_non_null_count(e) for e in fx['expected_events']),
+                           default=_non_null_count(expected))
 
             if args.stats:
                 status = 'ok' if n_fields >= args.min_fields else f'skip (<{args.min_fields} fields)'
@@ -117,13 +94,16 @@ def main():
                 skipped += 1
                 continue
 
-            assistant_output = {k: expected.get(k) for k in _AI_OUTPUT_KEYS}
+            # Listing fixtures carry expected_events; detail fixtures a single `expected`.
+            events = fx['expected_events'] or [expected]
+            assistant_output = {'events': [{k: e.get(k) for k in OUTPUT_KEYS} for e in events]}
 
             record = {
+                'system': _SYSTEM,
                 'messages': [
                     {
                         'role':    'user',
-                        'content': _PROMPT + fx['clean_text'][:4000],
+                        'content': build_user_message(fx['clean_text'], url=fx['url']),
                     },
                     {
                         'role':    'assistant',

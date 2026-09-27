@@ -129,14 +129,6 @@ def test_page_data_outranks_context(spider):
     assert item['location_title'] == 'Back Room'
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="extract_page_context is documented as 'Do NOT return start_datetime "
-           "or title', but parse_event does not enforce it: a context title is "
-           "merged in and emitted, so a mis-written spider labels every event on "
-           "the site with the venue name instead of failing loudly. "
-           "NormalizePipeline drops the item later only because it has no date.",
-)
 def test_context_never_supplies_a_title(spider):
     """A venue-level title would label every event on the site identically."""
     resp = response('<html><body>nothing</body></html>', context={'title': 'The Rusty Tap'})
@@ -303,3 +295,21 @@ def test_merge_enriched_upgrades_only_longer_descriptions():
     assert base['description'] == 'Short blurb'
     BaseEventSpider._merge_enriched(base, {'description': 'A considerably longer blurb'})
     assert base['description'] == 'A considerably longer blurb'
+
+
+# ── Listing pages ─────────────────────────────────────────────────────────────
+
+def test_listing_page_yields_one_item_per_event(spider):
+    html = jsonld_page('''[{"@type": "Event", "name": "Show A", "startDate": "2026-06-01T20:00"},
+                          {"@type": "Event", "name": "Show B", "startDate": "2026-06-02T20:00"}]''')
+    items = list(spider.parse_event(response(html, context={'location_title': 'Hall'})))
+    assert [i['title'] for i in items] == ['Show A', 'Show B']
+    assert all(i['location_title'] == 'Hall' for i in items)
+
+
+def test_listing_partial_survives_an_empty_detail_page(spider):
+    partial = {'title': 'Show A', 'start_datetime': '2026-06-01T20:00'}
+    request = Request('https://x.test/e/a', meta={'context': {}, 'partial': partial})
+    resp = HtmlResponse('https://x.test/e/a', body=b'<html></html>', encoding='utf-8', request=request)
+    [item] = list(spider.parse_event(resp))
+    assert item['title'] == 'Show A' and item['start_datetime'] == '2026-06-01T20:00'

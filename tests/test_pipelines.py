@@ -1,10 +1,12 @@
 """
 Tests for the item pipelines: 100 Normalize → 200 FingerprintDedup → 300 APISubmit.
 
-Date assertions use timezone-aware input strings. Naive strings are resolved
-against the *machine's* local timezone by dateparser, which is not stable
-across dev machines and CI.
+Date assertions use timezone-aware input strings or an explicit item
+`timezone`. Naive strings without one fall back to the machine's local zone,
+which is not stable across dev machines and CI.
 """
+from datetime import datetime
+
 import pytest
 from scrapy.exceptions import DropItem
 
@@ -31,12 +33,12 @@ def _item(**fields) -> EventItem:
 def test_missing_title_is_dropped(normalize):
     item = EventItem()
     item['start_datetime'] = '2026-06-05T19:00:00-05:00'
-    with pytest.raises(DropItem, match='Missing title'):
+    with pytest.raises(DropItem, match='missing_title'):
         normalize.process_item(item, None)
 
 
 def test_unparseable_start_is_dropped(normalize):
-    with pytest.raises(DropItem, match='Unparseable start_datetime'):
+    with pytest.raises(DropItem, match='unparseable_start'):
         normalize.process_item(_item(start_datetime='sometime next week'), None)
 
 
@@ -80,7 +82,6 @@ def test_offset_is_converted_to_utc(normalize):
 
 
 def test_datetime_objects_pass_through(normalize):
-    from datetime import datetime
     result = normalize.process_item(_item(start_datetime=datetime(2026, 6, 5, 19, 0)), None)
     assert result['start_datetime'] == '2026-06-05T19:00:00'
 
@@ -88,6 +89,27 @@ def test_datetime_objects_pass_through(normalize):
 def test_naive_dates_come_out_timezone_aware(normalize):
     result = normalize.process_item(_item(start_datetime='2026-06-05T19:00:00'), None)
     assert result['start_datetime'].endswith('+00:00')
+
+
+def test_naive_dates_are_read_in_the_venue_timezone(normalize):
+    result = normalize.process_item(
+        _item(start_datetime='June 5 2026 7pm', end_datetime='2026-06-05T22:00:00',
+              rdates=['2026-06-12 19:00'], timezone='America/Chicago'), None)
+    assert result['start_datetime'] == '2026-06-06T00:00:00+00:00'
+    assert result['end_datetime'] == '2026-06-06T03:00:00+00:00'
+    assert result['rdates'] == ['2026-06-13T00:00:00+00:00']
+
+
+def test_explicit_offset_beats_venue_timezone(normalize):
+    result = normalize.process_item(
+        _item(start_datetime='2026-06-05T19:00:00-04:00', timezone='America/Chicago'), None)
+    assert result['start_datetime'] == '2026-06-05T23:00:00+00:00'
+
+
+def test_naive_datetime_object_gets_venue_timezone(normalize):
+    result = normalize.process_item(
+        _item(start_datetime=datetime(2026, 6, 5, 19, 0), timezone='America/Chicago'), None)
+    assert result['start_datetime'] == '2026-06-05T19:00:00-05:00'
 
 
 def test_end_datetime_optional(normalize):
@@ -124,7 +146,8 @@ def test_missing_occurrence_lists_default_to_empty(normalize):
     (25,          25.0),
     ('25',        25.0),
     ('1,250.00',  1250.0),
-    ('free',      None),
+    ('free',      0.0),
+    ('$10 - $15', 10.0),
     (None,        None),
 ])
 def test_ticket_price_coercion(normalize, raw, expected):
@@ -150,12 +173,6 @@ def test_existing_recurrence_values_are_kept(normalize):
     assert result['recurrence_byday'] == ['TH']
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="NormalizePipeline strips only commas before float(), so a currency "
-           "symbol from a CSS selector ('$25.00') raises ValueError and the "
-           "price is silently discarded.",
-)
 def test_currency_symbol_price(normalize):
     assert normalize.process_item(_item(ticket_price='$25.00'), None)['ticket_price'] == 25.0
 
@@ -174,12 +191,11 @@ ONEOFF = {
 def test_first_sighting_passes_through(dedup_pipeline):
     result = dedup_pipeline.process_item(dict(ONEOFF), None)
     assert result['fingerprint']
-    assert result['is_recurring_update'] is False
 
 
 def test_exact_duplicate_is_dropped(dedup_pipeline):
     dedup_pipeline.process_item(dict(ONEOFF), None)
-    with pytest.raises(DropItem, match='Duplicate event'):
+    with pytest.raises(DropItem, match='duplicate_in_run'):
         dedup_pipeline.process_item(dict(ONEOFF), None)
 
 
@@ -217,20 +233,10 @@ def test_address_substitutes_for_a_missing_venue_name(dedup_pipeline):
         dedup_pipeline.process_item(dict(a), None)
 
 
-def test_dedup_survives_reopening_the_database(dedup_pipeline, dedup_spider):
-    from scraper.pipelines import FingerprintDedupPipeline
-    dedup_pipeline.process_item(dict(ONEOFF), None)
-    dedup_pipeline.close_spider(dedup_spider)
-
-    reopened = FingerprintDedupPipeline()
-    reopened.open_spider(dedup_spider)
-    try:
-        with pytest.raises(DropItem):
-            reopened.process_item(dict(ONEOFF), None)
-    finally:
-        reopened.close_spider(dedup_spider)
-    # Re-open so the fixture's teardown has a live connection to close.
-    dedup_pipeline.open_spider(dedup_spider)
+def test_fingerprint_is_prefixed_with_the_source(dedup_pipeline):
+    a = dedup_pipeline.process_item(dict(ONEOFF, source_id='src-1'), None)
+    b = dedup_pipeline.process_item(dict(ONEOFF, source_id='src-2'), None)
+    assert a['fingerprint'].startswith('src-1:') and b['fingerprint'].startswith('src-2:')
 
 
 # ── 200 · Dedup: recurring events ─────────────────────────────────────────────
@@ -247,78 +253,26 @@ RECURRING = {
 }
 
 
-def _register(pipeline, item, backend_id='uuid-123'):
-    """Run a recurring item through, then record the backend ID as APISubmit would."""
-    result = pipeline.process_item(dict(item), None)
-    pipeline.store_recurring_backend_id(
-        fingerprint=result['fingerprint'], backend_id=backend_id,
-        title=item['title'], source_url=item['source_url'],
-        start_datetime=item['start_datetime'],
-    )
-    return result
-
-
-def test_first_recurring_sighting_is_a_create(dedup_pipeline):
-    result = dedup_pipeline.process_item(dict(RECURRING), None)
-    assert result['is_recurring_update'] is False
-    assert result['backend_event_id'] is None
-
-
-def test_unchanged_recurring_event_is_dropped(dedup_pipeline):
-    _register(dedup_pipeline, RECURRING)
-    with pytest.raises(DropItem, match='already up-to-date'):
-        dedup_pipeline.process_item(dict(RECURRING), None)
-
-
-def test_new_occurrence_date_becomes_a_patch(dedup_pipeline):
-    _register(dedup_pipeline, RECURRING)
-    result = dedup_pipeline.process_item(
-        dict(RECURRING, start_datetime='2026-06-11T19:00:00'), None)
-    assert result['is_recurring_update'] is True
-    assert result['backend_event_id'] == 'uuid-123'
-
-
-def test_patched_date_is_persisted(dedup_pipeline):
-    _register(dedup_pipeline, RECURRING)
-    moved = dict(RECURRING, start_datetime='2026-06-11T19:00:00')
-    dedup_pipeline.process_item(dict(moved), None)
-    with pytest.raises(DropItem, match='already up-to-date'):
-        dedup_pipeline.process_item(dict(moved), None)
+def test_recurring_fingerprint_ignores_the_next_occurrence_date(dedup_pipeline):
+    """Sites bump the 'next date' every week; the backend must see one event."""
+    first = dedup_pipeline.process_item(dict(RECURRING), None)['fingerprint']
+    dedup_pipeline.seen.clear()  # a later run
+    later = dedup_pipeline.process_item(
+        dict(RECURRING, start_datetime='2026-06-11T19:00:00'), None)['fingerprint']
+    assert first == later
 
 
 def test_changed_pattern_is_a_different_event(dedup_pipeline):
     """A weekly event moving from Thursdays to Fridays fingerprints separately."""
-    _register(dedup_pipeline, RECURRING)
-    result = dedup_pipeline.process_item(dict(RECURRING, recurrence_byday=['FR']), None)
-    assert result['is_recurring_update'] is False
+    a = dedup_pipeline.process_item(dict(RECURRING), None)['fingerprint']
+    b = dedup_pipeline.process_item(dict(RECURRING, recurrence_byday=['FR']), None)['fingerprint']
+    assert a != b
 
 
-def test_recurring_and_oneoff_use_separate_tables(dedup_pipeline):
+def test_recurring_and_oneoff_fingerprint_differently(dedup_pipeline):
     dedup_pipeline.process_item(dict(ONEOFF), None)
     same_but_recurring = dict(ONEOFF, recurrence_freq='weekly', recurrence_byday=['FR'])
     assert dedup_pipeline.process_item(same_but_recurring, None)['fingerprint']
-
-
-# ── 200 · Dedup: URL tracking for ConditionalFetchMiddleware ──────────────────
-
-def test_url_tracking_round_trip(dedup_pipeline):
-    url = 'https://x.test/page'
-    assert dedup_pipeline.url_seen(url) is False
-    dedup_pipeline.mark_url(url, etag='"abc"', last_modified='Wed, 01 Jan 2026 00:00:00 GMT')
-    assert dedup_pipeline.url_seen(url) is True
-
-    row = dedup_pipeline.conn.execute(
-        'SELECT etag, last_modified FROM scraped_urls WHERE url = ?', (url,)).fetchone()
-    assert row == ('"abc"', 'Wed, 01 Jan 2026 00:00:00 GMT')
-
-
-def test_mark_url_overwrites_previous_validators(dedup_pipeline):
-    url = 'https://x.test/page'
-    dedup_pipeline.mark_url(url, etag='"old"')
-    dedup_pipeline.mark_url(url, etag='"new"')
-    row = dedup_pipeline.conn.execute(
-        'SELECT etag FROM scraped_urls WHERE url = ?', (url,)).fetchone()
-    assert row == ('"new"',)
 
 
 # ── 300 · API submit: payload shape ───────────────────────────────────────────
@@ -344,9 +298,105 @@ def test_payload_prefers_the_events_own_url():
     assert payload['url'] == 'https://venue.test/e'
 
 
-def test_payload_excludes_scraper_internals():
+def test_payload_carries_upsert_metadata():
     payload = APISubmitPipeline._build_payload({
-        'title': 'x', 'is_recurring_update': True, 'backend_event_id': 'uuid-123',
+        'title': 'x', 'fingerprint': 'src:abc', 'source_id': 'src', 'confidence': 0.5,
+        'review_required': True, 'evidence': 'June 5 7pm', 'drop_reason': None,
     })
-    assert 'is_recurring_update' not in payload
-    assert 'backend_event_id' not in payload
+    assert payload['source_fingerprint'] == 'src:abc'
+    assert payload['source_id'] == 'src'
+    assert payload['review_required'] is True
+    assert 'evidence' not in payload and 'drop_reason' not in payload
+
+
+class FakeClient:
+    token = 't'
+
+    def __init__(self, status, body):
+        self.status, self.body, self.payloads = status, body, []
+
+    def ingest(self, payload):
+        self.payloads.append(payload)
+        return self.status, self.body
+
+
+@pytest.mark.parametrize('status, body, expected', [
+    (201, {'id': 'e1'},                          'created'),
+    (200, {'id': 'e1', 'changed': ['title']},    'updated'),
+    (200, {'id': 'e1', 'changed': []},           'unchanged'),
+    (400, {'detail': 'bad'},                     'failed'),
+    (0,   {'detail': 'connection refused'},      'failed'),
+])
+def test_submit_records_ingest_status(status, body, expected):
+    pipeline = APISubmitPipeline()
+    pipeline.client = FakeClient(status, body)
+    item = pipeline.process_item(_item(fingerprint='src:abc'), None)
+    assert item['ingest_status'] == expected
+
+
+# ── 150 · Validate ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def validate():
+    from scraper.pipelines import ValidatePipeline
+    return ValidatePipeline()
+
+
+def _future(days=7):
+    from datetime import timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+def _valid(**fields):
+    fields.setdefault('start_datetime', _future())
+    return _item(**fields)
+
+
+def test_upcoming_event_passes_and_is_scored(validate):
+    item = validate.process_item(_valid(extraction_method='jsonld', description='d'), None)
+    assert item['confidence'] == 0.95
+    assert item['review_required'] is False
+
+
+def test_ai_events_go_to_review(validate):
+    item = validate.process_item(_valid(extraction_method='ai'), None)
+    assert item['review_required'] is True
+
+
+def test_review_threshold_is_configurable(validate):
+    from tests.conftest import FakeSpider
+    item = validate.process_item(_valid(extraction_method='ai'), FakeSpider(REVIEW_THRESHOLD=0.4))
+    assert item['review_required'] is False
+
+
+@pytest.mark.parametrize('fields, reason', [
+    ({'drop_reason': 'ai_unverified'},                       'ai_unverified'),
+    ({'title': 'Opening Hours'},                             'not_an_event'),
+    ({'title': 'Gift Cards'},                                'not_an_event'),
+    ({'title': 'Private Events'},                            'not_an_event'),
+    ({'title': 'The Rusty Tap', 'location_title': 'The Rusty Tap'}, 'title_is_venue'),
+    ({'title': 'ab'},                                        'bad_title_length'),
+    ({'start_datetime': _future(-3)},                        'past_event'),
+    ({'start_datetime': _future(900)},                       'too_far_future'),
+])
+def test_drops_record_a_reason(validate, fields, reason):
+    with pytest.raises(DropItem, match=f'^{reason}:'):
+        validate.process_item(_valid(**fields), None)
+
+
+def test_ongoing_multi_day_event_is_not_past(validate):
+    validate.process_item(_valid(start_datetime=_future(-2), end_datetime=_future(2)), None)
+
+
+def test_recurring_event_with_past_anchor_is_kept(validate):
+    validate.process_item(_valid(start_datetime=_future(-30), recurrence_freq='weekly'), None)
+
+
+def test_recurring_event_that_ended_is_dropped(validate):
+    with pytest.raises(DropItem, match='^past_event'):
+        validate.process_item(_valid(start_datetime=_future(-30), recurrence_freq='weekly',
+                                     recurrence_until='2020-01-01'), None)
+
+
+def test_future_rdates_keep_a_past_anchor(validate):
+    validate.process_item(_valid(start_datetime=_future(-30), rdates=[_future(10)]), None)

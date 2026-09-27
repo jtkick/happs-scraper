@@ -6,14 +6,16 @@ RotatingUserAgentMiddleware
   dominates the request log of a target site.
 
 ConditionalFetchMiddleware
-  Attaches If-None-Match / If-Modified-Since headers from the dedup DB on
-  repeat visits, and short-circuits on 304 Not Modified responses.
+  Skips unchanged listing pages (304) and tells the run tracker which
+  events those pages still list.
 """
 
 from __future__ import annotations
 import itertools
+import json
 import logging
 import random
+import sqlite3
 
 from scrapy import signals
 from scrapy.exceptions import IgnoreRequest
@@ -60,61 +62,82 @@ class RotatingUserAgentMiddleware:
 
 class ConditionalFetchMiddleware:
     """
-    Use HTTP cache-validation headers to avoid re-downloading unchanged pages.
+    Skip unchanged listing pages without losing track of their events.
 
-    On outgoing requests: attach If-None-Match / If-Modified-Since if we have
-    cached values in the dedup DB.
+    Requests marked meta['cacheable'] (listing pages) have their validators
+    (ETag / Last-Modified) stored; the run tracker stores which event
+    fingerprints each page produced. Requests also marked meta['conditional']
+    send the validators — but only when both are on file — and a 304 hands
+    the page's remembered fingerprints to the tracker as "still listed".
+    Without that, an unchanged page would look like its events vanished.
 
-    On incoming 304 responses: raise IgnoreRequest so the item is skipped
-    cleanly (Scrapy will still call process_response, but we drop it here).
+    Never used for detail pages. Everything lives in a small local SQLite
+    file (ETAG_DB_PATH); losing it only costs full downloads.
     """
 
-    def process_request(self, request, spider):
-        # Look up the dedup pipeline's DB through the crawler's extension
-        # registry.  It may not be open yet on the very first request.
-        dedup = self._get_dedup(spider)
-        if dedup is None:
-            return
+    def __init__(self, path: str, crawler=None):
+        self.crawler = crawler
+        self.conn = sqlite3.connect(path)
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS validators '
+            '(url TEXT PRIMARY KEY, etag TEXT, last_modified TEXT)')
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS page_events (url TEXT PRIMARY KEY, fingerprints TEXT)')
+        self.conn.commit()
 
-        url = request.url
-        row = dedup.conn.execute(
-            'SELECT etag, last_modified FROM scraped_urls WHERE url = ?', (url,)
-        ).fetchone()
+    @classmethod
+    def from_crawler(cls, crawler):
+        mw = cls(crawler.settings.get('ETAG_DB_PATH', 'etags.db'), crawler)
+        # engine_stopped fires after spider_closed, when the tracker has
+        # written each page's fingerprints through remember_events().
+        crawler.signals.connect(mw.close, signal=signals.engine_stopped)
+        return mw
 
+    def close(self, spider=None):
+        self.conn.close()
+
+    def process_request(self, request, spider=None):
+        if not request.meta.get('conditional') or self.page_events(request.url) is None:
+            return None
+        row = self.conn.execute(
+            'SELECT etag, last_modified FROM validators WHERE url = ?', (request.url,)).fetchone()
         if row:
             etag, last_modified = row
             if etag:
                 request.headers['If-None-Match'] = etag
             if last_modified:
                 request.headers['If-Modified-Since'] = last_modified
+        return None
 
-    def process_response(self, request, response: Response, spider):
+    def process_response(self, request, response: Response, spider=None):
+        if not request.meta.get('cacheable'):
+            return response
+        # Scrapy ≥ 2.13 no longer passes `spider` to middleware hooks.
+        spider = spider or getattr(self.crawler, 'spider', None)
+        tracker = getattr(spider, 'tracker', None)
+        if tracker is not None:
+            tracker.page_store = self
         if response.status == 304:
-            logger.debug("304 Not Modified — skipping %s", request.url)
+            if tracker is not None:
+                tracker.not_modified(request, self.page_events(request.url) or [])
             raise IgnoreRequest(f"304 Not Modified: {request.url}")
-
-        # Store ETag / Last-Modified for next run.
-        dedup = self._get_dedup(spider)
-        if dedup is not None:
-            etag = response.headers.get('ETag', b'').decode('utf-8', errors='ignore') or None
-            lm   = response.headers.get('Last-Modified', b'').decode('utf-8', errors='ignore') or None
-            if etag or lm:
-                dedup.mark_url(request.url, etag=etag, last_modified=lm)
-
+        etag = response.headers.get('ETag', b'').decode('utf-8', errors='ignore') or None
+        lm = response.headers.get('Last-Modified', b'').decode('utf-8', errors='ignore') or None
+        if etag or lm:
+            self.remember(request.url, etag, lm)
         return response
 
-    def process_exception(self, request, exception, spider):
-        return None
+    def remember(self, url: str, etag: str = None, last_modified: str = None):
+        self.conn.execute(
+            'INSERT OR REPLACE INTO validators (url, etag, last_modified) VALUES (?, ?, ?)',
+            (url, etag, last_modified))
+        self.conn.commit()
 
-    @staticmethod
-    def _get_dedup(spider):
-        """Retrieve the FingerprintDedupPipeline instance if available."""
-        try:
-            from scraper.pipelines import FingerprintDedupPipeline
-            crawler = spider.crawler
-            for pipeline in crawler.engine.scraper.itemproc.middlewares:
-                if isinstance(pipeline, FingerprintDedupPipeline):
-                    return pipeline
-        except Exception:
-            pass
-        return None
+    def remember_events(self, url: str, fingerprints) -> None:
+        self.conn.execute('INSERT OR REPLACE INTO page_events (url, fingerprints) VALUES (?, ?)',
+                          (url, json.dumps(sorted(fingerprints))))
+        self.conn.commit()
+
+    def page_events(self, url: str):
+        row = self.conn.execute('SELECT fingerprints FROM page_events WHERE url = ?', (url,)).fetchone()
+        return json.loads(row[0]) if row else None

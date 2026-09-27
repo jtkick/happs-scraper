@@ -1,0 +1,59 @@
+name: Scheduled crawl
+
+# Hourly: diagnose missed-event reports, crawl the sources the backend says
+# are due, then fail the job (→ GitHub notification) if any source broke.
+# All crawl state lives in the backend, so the runner keeps nothing between
+# runs except the optional ETag cache.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max sources to crawl'
+        default: '200'
+
+concurrency:
+  group: scheduled-crawl
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      HAPPS_API_BASE: ${{ secrets.HAPPS_API_BASE }}
+      HAPPS_SCRAPER_TOKEN: ${{ secrets.HAPPS_SCRAPER_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PLAYWRIGHT_ENABLED: 'true'
+      ETAG_DB_PATH: .cache/etags.db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt scrapy-playwright
+          playwright install --with-deps chromium
+
+      - name: Restore ETag cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: etags-${{ github.run_id }}
+          restore-keys: etags-
+
+      - name: Diagnose missed-event reports
+        run: python tools/process_reports.py
+
+      - name: Crawl due sources
+        run: scrapy crawl generic -a limit=${{ github.event.inputs.limit || '200' }}
+
+      - name: Health summary
+        # Window matches the schedule so each breakage alerts once.
+        run: python tools/crawl_summary.py --hours 1

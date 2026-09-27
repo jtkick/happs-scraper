@@ -1,26 +1,35 @@
 """
 Item pipelines — run in priority order for every EventItem.
 
-  100  NormalizePipeline           — clean & parse dates/text
-  200  FingerprintDedupPipeline    — drop or flag items already seen
-  300  APISubmitPipeline           — POST (new) or PATCH (recurring update)
+  100  NormalizePipeline           — clean & parse dates/text (venue timezone)
+  150  ValidatePipeline            — drop non-/past events, score confidence
+  200  FingerprintDedupPipeline    — source fingerprint, drop in-run repeats
+  300  APISubmitPipeline           — upsert into the backend
+
+Drops raise DropItem('<reason_code>: detail'); the run tracker records the
+code so a crawl can explain what it missed.
 """
 
 from __future__ import annotations
 import hashlib
 import logging
 import re
-import sqlite3
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import dateparser
-import requests
 from scrapy.exceptions import DropItem
 
 from scraper import cleaners
 
 logger = logging.getLogger(__name__)
+
+
+def spider_setting(spider, name, default=None):
+    settings = getattr(spider, 'settings', None)
+    return settings.get(name, default) if settings is not None else default
 
 
 # ── 100 · Normalize ───────────────────────────────────────────────────────────
@@ -29,6 +38,8 @@ class NormalizePipeline:
     _DATE_SETTINGS = {
         'RETURN_AS_TIMEZONE_AWARE': True,
         'PREFER_DAY_OF_MONTH': 'first',
+        # Listings print "Fri, Jun 5" without a year: that means the next one.
+        'PREFER_DATES_FROM': 'future',
         'TO_TIMEZONE': 'UTC',
     }
 
@@ -36,17 +47,18 @@ class NormalizePipeline:
         # Validate required fields before anything else.
         raw_title = self._clean(item.get('title'))
         if not raw_title:
-            raise DropItem("Missing title")
+            raise DropItem("missing_title")
 
-        start = self._parse_date(item.get('start_datetime'))
+        tz = item.get('timezone') or spider_setting(spider, 'DEFAULT_EVENT_TIMEZONE')
+        start = self._parse_date(item.get('start_datetime'), tz)
         if not start:
-            raise DropItem(f"Unparseable start_datetime for '{raw_title}'")
+            raise DropItem(f"unparseable_start: {raw_title}")
         item['start_datetime'] = start
 
         # Normalize all other fields first so cross-field cleaners (e.g.
         # venue-suffix stripper) see clean values when they run on the title.
         item['description']      = self._clean(item.get('description'))
-        item['end_datetime']     = self._parse_date(item.get('end_datetime'))
+        item['end_datetime']     = self._parse_date(item.get('end_datetime'), tz)
         item['location_title']   = self._clean(item.get('location_title'))
         item['location_address'] = self._clean(item.get('location_address'))
         item['url']              = self._clean(item.get('url'))
@@ -55,12 +67,7 @@ class NormalizePipeline:
 
         item['title'] = cleaners.clean_title(raw_title, dict(item)) or raw_title
 
-        price = item.get('ticket_price')
-        if price is not None:
-            try:
-                item['ticket_price'] = float(str(price).replace(',', ''))
-            except (ValueError, TypeError):
-                item['ticket_price'] = None
+        item['ticket_price'] = self._parse_price(item.get('ticket_price'))
 
         if not isinstance(item.get('tag_names'), list):
             item['tag_names'] = []
@@ -76,7 +83,7 @@ class NormalizePipeline:
         # Normalize rdates: parse each entry as a date string
         raw_rdates = item.get('rdates') or []
         item['rdates'] = [
-            p for r in raw_rdates if (p := self._parse_date(r))
+            p for r in raw_rdates if (p := self._parse_date(r, tz))
         ]
         if raw_rdates:
             logger.debug("rdates: %d raw → %d parsed", len(raw_rdates), len(item['rdates']))
@@ -86,11 +93,11 @@ class NormalizePipeline:
         normalized_ex = []
         for ex in raw_exdates:
             if isinstance(ex, dict):
-                dt = self._parse_date(ex.get('datetime'))
+                dt = self._parse_date(ex.get('datetime'), tz)
                 if dt:
                     normalized_ex.append({'datetime': dt, 'reason': ex.get('reason', '')})
             elif isinstance(ex, str):
-                dt = self._parse_date(ex)
+                dt = self._parse_date(ex, tz)
                 if dt:
                     normalized_ex.append({'datetime': dt, 'reason': ''})
         item['exdates'] = normalized_ex
@@ -103,153 +110,160 @@ class NormalizePipeline:
         value = re.sub(r'\s+', ' ', str(value)).strip()
         return value or None
 
-    def _parse_date(self, value) -> Optional[str]:
+    @staticmethod
+    def _parse_price(value) -> Optional[float]:
+        """'$25.00' → 25.0, 'Free' → 0.0, '$10–$15' → 10.0 (the lowest price)."""
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value)
+        if re.search(r'\bfree\b', text, re.IGNORECASE):
+            return 0.0
+        m = re.search(r'\d[\d,]*(?:\.\d+)?', text)
+        return float(m.group().replace(',', '')) if m else None
+
+    def _parse_date(self, value, tz: Optional[str] = None) -> Optional[str]:
+        """
+        Parse to an aware UTC ISO string. Strings without an offset are read
+        in `tz` (the venue's zone) — without it they would silently take the
+        scraper machine's local zone.
+        """
         if not value:
             return None
         if hasattr(value, 'isoformat'):
+            if tz and getattr(value, 'tzinfo', 1) is None:
+                value = value.replace(tzinfo=ZoneInfo(tz))
             return value.isoformat()
-        parsed = dateparser.parse(str(value), settings=self._DATE_SETTINGS)
+        settings = {**self._DATE_SETTINGS, 'TIMEZONE': tz} if tz else self._DATE_SETTINGS
+        parsed = dateparser.parse(str(value), settings=settings)
         if parsed is None:
             logger.warning("_parse_date: could not parse %r", value)
         return parsed.isoformat() if parsed else None
 
 
-# ── 200 · Fingerprint dedup ───────────────────────────────────────────────────
+# ── 150 · Validate + confidence ───────────────────────────────────────────────
+
+# Titles that are site furniture, not events.
+_NON_EVENT_TITLE = re.compile(
+    r'^(?:opening|business|store|kitchen|office)?\s*hours\b|\bgift\s*cards?\b|\bmenus?$|'
+    r'\bbook\s+a\s+table\b|\bprivate\s+(?:hire|events?|parties)\b|\breservations?$|'
+    r'^(?:closed|we are closed|temporarily closed)\b|\bcareers?\b|\bjobs?\b',
+    re.IGNORECASE,
+)
+
+_METHOD_CONFIDENCE = {
+    'ical': 0.95, 'jsonld': 0.9, 'inline_json': 0.8, 'recipe': 0.75,
+    'selectors': 0.75, 'opengraph': 0.6, 'ai': 0.5,
+}
+
+
+class ValidatePipeline:
+    """
+    Drop things that aren't upcoming public events, and score the rest.
+
+    Every drop raises DropItem('<reason_code>: detail') so crawl runs can
+    report *why* an event was missed. Items below REVIEW_THRESHOLD are sent
+    to the backend with review_required=True (held for a human).
+    """
+
+    MAX_FUTURE = timedelta(days=548)
+
+    def process_item(self, item, spider):
+        if item.get('drop_reason'):
+            raise DropItem(f"{item['drop_reason']}: {item.get('title')}")
+
+        title = item.get('title') or ''
+        if not 3 <= len(title) <= 200:
+            raise DropItem(f"bad_title_length: {title[:60]}")
+        if _NON_EVENT_TITLE.search(title):
+            raise DropItem(f"not_an_event: {title}")
+        venue = item.get('location_title')
+        if venue and _norm(title) == _norm(venue):
+            raise DropItem(f"title_is_venue: {title}")
+
+        now = datetime.now(timezone.utc)
+        start = _iso(item.get('start_datetime'))
+        end = _iso(item.get('end_datetime'))
+        if start and start > now + self.MAX_FUTURE:
+            raise DropItem(f"too_far_future: {title}")
+        if start and self._is_past(item, start, end, now):
+            raise DropItem(f"past_event: {title}")
+
+        item['confidence'] = self.score(item)
+        threshold = spider_setting(spider, 'REVIEW_THRESHOLD', 0.7)
+        item['review_required'] = item['confidence'] < threshold
+        return item
+
+    @staticmethod
+    def _is_past(item, start, end, now) -> bool:
+        if item.get('recurrence_freq', 'none') != 'none':
+            until = item.get('recurrence_until')
+            return bool(until) and str(until) < now.date().isoformat()
+        if item.get('rdates'):
+            last = max(filter(None, map(_iso, item['rdates'])), default=None)
+            if last and last >= now:
+                return False
+        return (end or start + timedelta(hours=12)) < now
+
+    @staticmethod
+    def score(item) -> float:
+        method = (item.get('extraction_method') or '').split(':')[0]
+        base = 0.9 if method == 'platform' else _METHOD_CONFIDENCE.get(method, 0.5)
+        bonus = sum(0.05 for present in (
+            item.get('end_datetime'),
+            item.get('location_address') or item.get('location_lat') is not None,
+            item.get('description'),
+        ) if present)
+        return round(min(1.0, base + bonus), 2)
+
+
+def _iso(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _norm(text: str) -> str:
+    return FingerprintDedupPipeline._normalize(text)
+
+
+# ── 200 · Fingerprint (in-run dedup) ──────────────────────────────────────────
 
 class FingerprintDedupPipeline:
     """
-    Two dedup paths:
+    Assign each event its source_fingerprint and drop repeats within one run
+    (e.g. the same show on a listing and on its detail page). Cross-run
+    identity and updates are the backend's job (upsert by fingerprint).
 
     Recurring events
-      Fingerprint = sha256(title + location + recurrence_signature).
-      The specific date is intentionally excluded because websites update
-      the "next occurrence" date while the recurrence pattern stays the same.
-      - First encounter  → create via API, store backend_id in recurring_fps table
-      - Re-encounter     → flag item as an update (is_recurring_update=True +
-                           backend_event_id) so APISubmitPipeline sends a PATCH
+      sha256(title + location + recurrence_signature) — the date is excluded
+      because sites keep bumping the "next occurrence".
+    One-off events
+      sha256(title + date + location).
 
-    Non-recurring events
-      Fingerprint = sha256(title + date + location).
-      Exact duplicates are dropped silently.
+    Fingerprints are prefixed with the backend source id (or the spider
+    name), so two sites never collide.
     """
 
     def open_spider(self, spider):
-        path = spider.settings.get('DEDUP_DB_PATH', 'dedup.db')
-        self.conn = sqlite3.connect(path)
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS fingerprints (
-                fingerprint  TEXT PRIMARY KEY,
-                title        TEXT,
-                source_url   TEXT,
-                created_at   TEXT DEFAULT (datetime('now'))
-            )
-        ''')
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS recurring_fingerprints (
-                fingerprint    TEXT PRIMARY KEY,
-                title          TEXT,
-                source_url     TEXT,
-                backend_id     TEXT,
-                start_datetime TEXT,
-                created_at     TEXT DEFAULT (datetime('now')),
-                updated_at     TEXT DEFAULT (datetime('now'))
-            )
-        ''')
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS scraped_urls (
-                url           TEXT PRIMARY KEY,
-                last_scraped  TEXT DEFAULT (datetime('now')),
-                etag          TEXT,
-                last_modified TEXT
-            )
-        ''')
-        self.conn.commit()
-
-    def close_spider(self, spider):
-        self.conn.close()
+        self.seen: set[str] = set()
 
     def process_item(self, item, spider):
-        is_recurring = item.get('recurrence_freq', 'none') != 'none'
-
-        if is_recurring:
-            return self._process_recurring(item)
-        else:
-            return self._process_oneoff(item)
-
-    # ── Recurring path ────────────────────────────────────────────────────────
-
-    def _process_recurring(self, item):
         from scraper.extractors.recurrence import signature
-        fp = self._recurring_fingerprint(item, signature)
-        item['fingerprint'] = fp
-
-        row = self.conn.execute(
-            'SELECT backend_id, start_datetime FROM recurring_fingerprints WHERE fingerprint = ?',
-            (fp,),
-        ).fetchone()
-
-        if row:
-            backend_id, old_start = row
-            new_start = item.get('start_datetime', '')
-
-            if old_start == new_start:
-                # Identical occurrence already stored — nothing to do.
-                raise DropItem(
-                    f"Recurring event already up-to-date: {item.get('title')}"
-                )
-
-            # New occurrence date — flag for a PATCH update.
-            logger.info(
-                "Recurring event date updated: '%s'  %s → %s",
-                item.get('title'), old_start, new_start,
-            )
-            item['is_recurring_update'] = True
-            item['backend_event_id']    = backend_id
-
-            # Update local record now; the API call may still fail, but on
-            # the next run we'll attempt the PATCH again with the current date.
-            self.conn.execute(
-                '''UPDATE recurring_fingerprints
-                   SET start_datetime = ?, updated_at = datetime('now')
-                   WHERE fingerprint = ?''',
-                (new_start, fp),
-            )
-            self.conn.commit()
-            return item
-
-        # First time we've seen this recurring event.
-        item['is_recurring_update'] = False
-        item['backend_event_id']    = None
-        return item
-
-    def store_recurring_backend_id(self, fingerprint: str, backend_id: str, title: str,
-                                   source_url: str, start_datetime: str):
-        """Called by APISubmitPipeline after a successful POST."""
-        self.conn.execute(
-            '''INSERT OR REPLACE INTO recurring_fingerprints
-               (fingerprint, title, source_url, backend_id, start_datetime)
-               VALUES (?, ?, ?, ?, ?)''',
-            (fingerprint, title, source_url, backend_id, start_datetime),
-        )
-        self.conn.commit()
-
-    # ── One-off path ──────────────────────────────────────────────────────────
-
-    def _process_oneoff(self, item):
-        fp = self._oneoff_fingerprint(item)
-        item['fingerprint'] = fp
-        item['is_recurring_update'] = False
-
-        if self.conn.execute(
-            'SELECT fingerprint FROM fingerprints WHERE fingerprint = ?', (fp,)
-        ).fetchone():
-            raise DropItem(f"Duplicate event: {item.get('title')}")
-
-        self.conn.execute(
-            'INSERT INTO fingerprints (fingerprint, title, source_url) VALUES (?, ?, ?)',
-            (fp, item.get('title'), item.get('source_url')),
-        )
-        self.conn.commit()
+        if item.get('recurrence_freq', 'none') != 'none':
+            fp = self._recurring_fingerprint(item, signature)
+        else:
+            fp = self._oneoff_fingerprint(item)
+        prefix = item.get('source_id') or getattr(spider, 'name', None) or 'unknown'
+        item['fingerprint'] = f'{prefix}:{fp}'
+        if item['fingerprint'] in self.seen:
+            raise DropItem(f"duplicate_in_run: {item.get('title')}")
+        self.seen.add(item['fingerprint'])
         return item
 
     # ── Fingerprint helpers ───────────────────────────────────────────────────
@@ -280,7 +294,7 @@ class FingerprintDedupPipeline:
 
     @staticmethod
     def _normalize(text: str) -> str:
-        text = unicodedata.normalize('NFKD', str(text).lower())
+        text = unicodedata.normalize('NFKD', str(text or '').lower())
         text = re.sub(r'[^\w\s]', '', text)
         return re.sub(r'\s+', ' ', text).strip()
 
@@ -288,106 +302,38 @@ class FingerprintDedupPipeline:
     def _date_only(dt_str: str) -> str:
         return str(dt_str)[:10] if dt_str else ''
 
-    # ── URL tracking (used by ConditionalFetchMiddleware) ─────────────────────
-
-    def url_seen(self, url: str) -> bool:
-        return bool(self.conn.execute(
-            'SELECT url FROM scraped_urls WHERE url = ?', (url,)
-        ).fetchone())
-
-    def mark_url(self, url: str, etag: str = None, last_modified: str = None):
-        self.conn.execute(
-            '''INSERT OR REPLACE INTO scraped_urls (url, etag, last_modified)
-               VALUES (?, ?, ?)''',
-            (url, etag, last_modified),
-        )
-        self.conn.commit()
-
 
 # ── 300 · API submit ──────────────────────────────────────────────────────────
 
 class APISubmitPipeline:
     """
-    POST new events; PATCH recurring events whose date has changed.
-
-    To PATCH, we need the backend event ID stored in the local dedup DB.
-    The dedup pipeline passes it through item['backend_event_id'].
-
-    After a successful POST of a new recurring event, we call back into the
-    dedup pipeline to store the returned backend UUID for future PATCHes.
+    Upsert each event into the backend (POST api/scraper/events/). The
+    backend creates, updates, or no-ops by fingerprint; the outcome is
+    recorded on item['ingest_status'] for the crawl-run report.
     """
 
     def open_spider(self, spider):
-        api_base = spider.settings.get('HAPPS_API_BASE', '').rstrip('/')
-        self.post_url  = f"{api_base}/events/scrape/"
-        self.patch_url = f"{api_base}/events/scrape/{{id}}/"
-        token = spider.settings.get('HAPPS_SCRAPER_TOKEN', '')
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'Token {token}',
-            'Content-Type': 'application/json',
-        })
-        if not token:
+        from scraper.sources.client import BackendClient
+        self.client = BackendClient.from_settings(spider.settings)
+        if not self.client.token:
             logger.warning("HAPPS_SCRAPER_TOKEN not set — submissions will be rejected")
 
     def close_spider(self, spider):
-        self.session.close()
+        self.client.close()
 
     def process_item(self, item, spider):
-        if item.get('is_recurring_update') and item.get('backend_event_id'):
-            self._patch(item, spider)
+        status, body = self.client.ingest(self._build_payload(item))
+        if status == 201:
+            item['ingest_status'] = 'created'
+            logger.info("Created: '%s' (%s)", item.get('title'), body.get('id'))
+        elif status == 200:
+            item['ingest_status'] = 'updated' if body.get('changed') else 'unchanged'
+            if body.get('changed'):
+                logger.info("Updated: '%s' %s", item.get('title'), body['changed'])
         else:
-            self._post(item, spider)
+            item['ingest_status'] = 'failed'
+            logger.error("Ingest failed (%s) for '%s': %s", status, item.get('title'), body)
         return item
-
-    def _post(self, item, spider):
-        payload = self._build_payload(item)
-        try:
-            resp = self.session.post(self.post_url, json=payload, timeout=30)
-            if resp.status_code == 201:
-                backend_id = resp.json().get('id')
-                logger.info("Created: '%s' (%s)", item.get('title'), backend_id)
-
-                # For recurring events, persist the backend ID so future
-                # scrape runs can PATCH instead of attempting a duplicate POST.
-                if item.get('recurrence_freq', 'none') != 'none' and backend_id:
-                    dedup = self._get_dedup(spider)
-                    if dedup:
-                        dedup.store_recurring_backend_id(
-                            fingerprint=item.get('fingerprint'),
-                            backend_id=backend_id,
-                            title=item.get('title', ''),
-                            source_url=item.get('source_url', ''),
-                            start_datetime=item.get('start_datetime', ''),
-                        )
-            elif resp.status_code == 409:
-                logger.debug("Already exists server-side: '%s'", item.get('title'))
-            else:
-                resp.raise_for_status()
-        except requests.HTTPError as exc:
-            logger.error("HTTP %s posting '%s': %s",
-                         exc.response.status_code, item.get('title'), exc)
-        except requests.RequestException as exc:
-            logger.error("Network error posting '%s': %s", item.get('title'), exc)
-
-    def _patch(self, item, spider):
-        url = self.patch_url.format(id=item['backend_event_id'])
-        payload = {
-            'start_datetime': item.get('start_datetime'),
-            'end_datetime':   item.get('end_datetime'),
-        }
-        try:
-            resp = self.session.patch(url, json=payload, timeout=30)
-            if resp.status_code == 200:
-                logger.info("Updated occurrence: '%s' → %s",
-                            item.get('title'), item.get('start_datetime'))
-            else:
-                resp.raise_for_status()
-        except requests.HTTPError as exc:
-            logger.error("HTTP %s patching '%s': %s",
-                         exc.response.status_code, item.get('title'), exc)
-        except requests.RequestException as exc:
-            logger.error("Network error patching '%s': %s", item.get('title'), exc)
 
     @staticmethod
     def _build_payload(item: dict) -> dict:
@@ -405,9 +351,12 @@ class APISubmitPipeline:
             'url':                  item.get('url') or item.get('source_url'),
             'image_url':            item.get('image_url'),
             'tag_names':            item.get('tag_names', []),
+            'source_id':            item.get('source_id'),
             'source_url':           item.get('source_url'),
-            'fingerprint':          item.get('fingerprint'),
+            'source_fingerprint':   item.get('fingerprint'),
             'extraction_method':    item.get('extraction_method'),
+            'confidence':           item.get('confidence'),
+            'review_required':      bool(item.get('review_required')),
             'recurrence_freq':      item.get('recurrence_freq', 'none'),
             'recurrence_interval':  item.get('recurrence_interval', 1),
             'recurrence_byday':     item.get('recurrence_byday', []),
@@ -417,13 +366,3 @@ class APISubmitPipeline:
             'rdates':               item.get('rdates', []),
             'exdates':              item.get('exdates', []),
         }
-
-    @staticmethod
-    def _get_dedup(spider) -> Optional['FingerprintDedupPipeline']:
-        try:
-            for mw in spider.crawler.engine.scraper.itemproc.middlewares:
-                if isinstance(mw, FingerprintDedupPipeline):
-                    return mw
-        except Exception:
-            pass
-        return None

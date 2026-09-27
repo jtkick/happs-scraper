@@ -145,7 +145,7 @@ def test_signature_ignores_the_occurrence_date():
            recurrence.signature(dict(base, start_datetime='2026-06-11'))
 
 
-# ── Known gap ─────────────────────────────────────────────────────────────────
+# ── Written ordinals ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('phrase, expected', [
     ('First Tuesday of the month',  '1TU'),
@@ -154,11 +154,5 @@ def test_signature_ignores_the_occurrence_date():
     ('Fourth Tuesday of the month', '4TU'),
     ('Last Tuesday of the month',   '-1TU'),
 ])
-@pytest.mark.xfail(
-    strict=True,
-    reason="_from_text strips ordinals with rstrip('stndrh'), which eats letters "
-           "out of written words ('first' -> 'fi'), so the RRULE code comes out "
-           "as 'fiTU'. Only numeric ordinals ('3rd') work today.",
-)
 def test_written_ordinal_weekday_of_month(phrase, expected):
     assert recurrence.extract('Event', phrase)['recurrence_byday'] == [expected]

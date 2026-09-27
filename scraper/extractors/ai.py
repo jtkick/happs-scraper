@@ -1,91 +1,271 @@
 """
-AI-powered event extractor — last resort when structured data is absent.
+AI-powered extraction with Claude Haiku — the last resort when a page has no
+structured data — plus the cheap helper calls that let the generic spider
+learn a site once and then run without AI:
 
-Strategy:
-  1. Strip HTML to clean prose with trafilatura (reduces tokens ~50x).
-  2. Send only the first 4 000 characters to Claude Haiku.
-  3. Ask for a JSON object matching EventItem fields.
-  4. Return the parsed dict, or None on any failure.
+  extract_many()        page text → every event on the page
+  extract()             single-event convenience wrapper (first event)
+  pick_events_links()   homepage links → the ones that lead to event listings
+  suggest_recipe()      page structure + known events → CSS selectors (recipe.py verifies)
+
+Output is constrained with structured outputs (output_config.format), so the
+response is always schema-valid JSON — no fence stripping or repair.
+
+Hallucination guard: every event must quote an `evidence` snippet (the text
+its date/time came from). Events whose snippet is not in the page text are
+returned with drop_reason='ai_unverified' so the pipeline drops them *and*
+records why.
 
 Disable entirely by leaving ANTHROPIC_API_KEY blank in .env.
 """
 
 from __future__ import annotations
+import functools
 import json
 import logging
+import re
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_PROMPT = """\
-Extract event information from the text below.
-Return ONLY a valid JSON object with these keys (use null for missing fields):
+MODEL = 'claude-haiku-4-5'
+MAX_TEXT_CHARS = 40_000
+MIN_TEXT_CHARS = 200
 
-{
-  "title": string,
-  "description": string,
-  "start_datetime": "ISO-8601 datetime string with timezone, e.g. 2025-06-15T19:00:00-05:00",
-  "end_datetime": "ISO-8601 or null",
-  "location_title": string or null,
-  "location_address": string or null,
-  "ticket_price": number (USD) or null,
-  "ticket_url": string or null,
-  "url": string or null,
-  "image_url": string or null
+# Keys each extracted event carries (also the fine-tuning target shape).
+OUTPUT_KEYS = [
+    'title', 'description', 'start_datetime', 'end_datetime',
+    'location_title', 'location_address',
+    'ticket_price', 'ticket_url', 'url', 'image_url', 'evidence',
+]
+
+_NULLABLE_STR = {'anyOf': [{'type': 'string'}, {'type': 'null'}]}
+_NULLABLE_NUM = {'anyOf': [{'type': 'number'}, {'type': 'null'}]}
+
+EVENTS_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'events': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'title':            {'type': 'string'},
+                    'description':      _NULLABLE_STR,
+                    'start_datetime':   {'type': 'string'},
+                    'end_datetime':     _NULLABLE_STR,
+                    'location_title':   _NULLABLE_STR,
+                    'location_address': _NULLABLE_STR,
+                    'ticket_price':     _NULLABLE_NUM,
+                    'ticket_url':       _NULLABLE_STR,
+                    'url':              _NULLABLE_STR,
+                    'image_url':        _NULLABLE_STR,
+                    'evidence':         {'type': 'string'},
+                },
+                'required': OUTPUT_KEYS,
+                'additionalProperties': False,
+            },
+        },
+    },
+    'required': ['events'],
+    'additionalProperties': False,
 }
 
-Text:
-"""
+_LINKS_SCHEMA = {
+    'type': 'object',
+    'properties': {'urls': {'type': 'array', 'items': {'type': 'string'}}},
+    'required': ['urls'],
+    'additionalProperties': False,
+}
+
+_SYSTEM = """\
+You extract upcoming public events from the text of a web page for an event-discovery app.
+
+Rules:
+- Return every distinct event or event date listed on the page. A listing page may hold dozens.
+- An event needs a name and a specific start date. Skip opening hours, menus, specials without a date, \
+gift cards, private-hire offers and past events.
+- start_datetime / end_datetime: ISO-8601 local time exactly as the page states it, WITHOUT a UTC \
+offset unless the page prints one (e.g. 2026-06-15T19:00). If no time is given, use the date only \
+(2026-06-15). If the year is missing, choose the next occurrence on or after today's date.
+- evidence: copy, verbatim, the shortest span of page text that states the event's date and time. \
+Do not paraphrase it.
+- ticket_price: the lowest price in the page's currency; 0 for free; null if not stated.
+- Use null for anything the page does not state. Never invent URLs or details."""
+
+
+@dataclass
+class AIResult:
+    events: list[dict] = field(default_factory=list)
+    truncated: bool = False
+
+
+def build_user_message(text: str, *, url: str = '', venue: Optional[str] = None,
+                       today: Optional[date] = None) -> str:
+    """The exact user turn sent to the model (tools/export_finetune.py reuses it)."""
+    header = [f'Today: {(today or date.today()).isoformat()}', f'Page URL: {url}']
+    if venue:
+        header.append(f'Venue (if the page does not name another): {venue}')
+    return '\n'.join(header) + '\n\nPage text:\n' + text[:MAX_TEXT_CHARS]
+
+
+def extract_many(html: str, base_url: str, api_key: str, *,
+                 venue: Optional[str] = None, today: Optional[date] = None) -> AIResult:
+    """Ask Claude for every event on the page. Returns an empty result on any failure."""
+    text = _page_text(html)
+    if not text or len(text) < MIN_TEXT_CHARS:
+        return AIResult()
+
+    truncated = len(text) > MAX_TEXT_CHARS
+    if truncated:
+        logger.info("AI input for %s truncated from %d to %d chars", base_url, len(text), MAX_TEXT_CHARS)
+
+    data = _call(api_key, _SYSTEM,
+                 build_user_message(text, url=base_url, venue=venue, today=today),
+                 EVENTS_SCHEMA, base_url)
+    if not data:
+        return AIResult(truncated=truncated)
+
+    haystack = _normalize(text)
+    events = []
+    for event in data.get('events', []):
+        clean = {k: v for k, v in event.items() if v not in (None, '')}
+        evidence = _normalize(clean.get('evidence', ''))
+        if not evidence or evidence not in haystack:
+            clean['drop_reason'] = 'ai_unverified'
+        events.append(clean)
+    return AIResult(events=events, truncated=truncated)
 
 
 def extract(html: str, base_url: str, api_key: str) -> Optional[dict]:
+    """Single-event convenience wrapper: the first verified event, or None."""
+    for event in extract_many(html, base_url, api_key).events:
+        if 'drop_reason' not in event:
+            return event
+    return None
+
+
+def pick_events_links(links: list[tuple[str, str]], homepage_url: str, api_key: str,
+                      limit: int = 3) -> list[str]:
     """
-    Strip the HTML to text, then ask Claude Haiku to extract event fields.
-    Returns a dict of extracted fields, or None if extraction failed.
+    Given a homepage's (anchor text, absolute URL) pairs, return up to `limit`
+    URLs most likely to list the site's upcoming events. Only URLs from the
+    input are ever returned.
     """
+    if not links:
+        return []
+    listing = '\n'.join(f'- {text.strip()[:80] or "(no text)"} | {url}' for text, url in links[:200])
+    prompt = (
+        f'These are the links on the homepage of {homepage_url}.\n'
+        f'Return up to {limit} URLs that most likely list upcoming events, shows, a calendar or a '
+        'schedule, best first. Return an empty list if none do.\n\n' + listing
+    )
+    data = _call(api_key, None, prompt, _LINKS_SCHEMA, homepage_url, max_tokens=1024)
+    allowed = {url for _, url in links}
+    return [u for u in (data or {}).get('urls', []) if u in allowed][:limit]
+
+
+_RECIPE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'item_css': {'type': 'string'},
+        'fields': {
+            'type': 'object',
+            'properties': {name: _NULLABLE_STR for name in
+                           ('title', 'date', 'time', 'description', 'link', 'image', 'price')},
+            'required': ['title', 'date', 'time', 'description', 'link', 'image', 'price'],
+            'additionalProperties': False,
+        },
+        'detail_link_css': _NULLABLE_STR,
+        'pagination_css': _NULLABLE_STR,
+    },
+    'required': ['item_css', 'fields', 'detail_link_css', 'pagination_css'],
+    'additionalProperties': False,
+}
+
+_RECIPE_SYSTEM = """\
+You write CSS selectors (as used by Python's parsel/Scrapy) that extract events from a listing page.
+
+- item_css selects one element per event. It must match every listed event and nothing else.
+- Each field selector is relative to the item element. Without a pseudo-element the element's full \
+text is used; append ::attr(name) for an attribute (prefer time::attr(datetime) when present) or \
+::text for direct text only. link defaults to the href attribute and image to src.
+- date must yield the event's date; time its start time if shown separately, else null.
+- Prefer stable class names and structure over positional selectors like :nth-child.
+- detail_link_css (absolute, not relative to the item) selects the href of each event's own page, \
+or null. pagination_css selects the href of the next page of the listing, or null."""
+
+
+def suggest_recipe(skeleton_html: str, events: list[dict], url: str, api_key: str) -> Optional[dict]:
+    """Ask Claude for CSS selectors reproducing `events` on this page (verified by the caller)."""
+    sample = [{'title': e.get('title'), 'start': e.get('start_datetime'), 'evidence': e.get('evidence')}
+              for e in events[:12]]
+    prompt = (f'Page URL: {url}\n\nEvents already extracted from this page:\n'
+              f'{json.dumps(sample, ensure_ascii=False, indent=1)}\n\n'
+              f'Page structure (scripts removed, long text truncated):\n{skeleton_html}')
+    return _call(api_key, _RECIPE_SYSTEM, prompt, _RECIPE_SCHEMA, url, max_tokens=2048)
+
+
+# ── Internals ─────────────────────────────────────────────────────────────────
+
+@functools.lru_cache(maxsize=4)
+def _client(api_key: str):
+    import anthropic
+    return anthropic.Anthropic(api_key=api_key)
+
+
+def _call(api_key: str, system: Optional[str], user: str, schema: dict, label: str,
+          max_tokens: int = 16000) -> Optional[dict]:
+    try:
+        import anthropic
+    except ImportError:
+        logger.warning("anthropic package not installed — skipping AI call")
+        return None
+
+    kwargs = {
+        'model': MODEL,
+        'max_tokens': max_tokens,
+        'messages': [{'role': 'user', 'content': user}],
+        'output_config': {'format': {'type': 'json_schema', 'schema': schema}},
+    }
+    if system:
+        kwargs['system'] = system
+
+    try:
+        message = _client(api_key).messages.create(**kwargs)
+    except anthropic.RateLimitError as exc:
+        logger.warning("Claude rate-limited for %s: %s", label, exc)
+        return None
+    except anthropic.APIStatusError as exc:
+        logger.warning("Claude API error %s for %s: %s", exc.status_code, label, exc.message)
+        return None
+    except anthropic.APIConnectionError as exc:
+        logger.warning("Claude connection error for %s: %s", label, exc)
+        return None
+
+    if message.stop_reason in ('refusal', 'max_tokens'):
+        logger.warning("Claude stopped with %s for %s", message.stop_reason, label)
+        return None
+
+    raw = next((b.text for b in message.content if b.type == 'text'), '')
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("AI returned invalid JSON for %s: %s", label, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _page_text(html: str) -> Optional[str]:
     try:
         import trafilatura
     except ImportError:
         logger.warning("trafilatura not installed — skipping AI extraction")
         return None
+    return trafilatura.extract(html, include_comments=False, include_tables=True)
 
-    text = trafilatura.extract(html, include_comments=False, include_tables=False)
-    if not text or len(text) < 200:
-        return None
 
-    try:
-        import anthropic
-    except ImportError:
-        logger.warning("anthropic package not installed — skipping AI extraction")
-        return None
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    try:
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            messages=[{
-                "role": "user",
-                "content": _PROMPT + text[:4000],
-            }],
-        )
-    except Exception as exc:
-        logger.warning("Claude API call failed for %s: %s", base_url, exc)
-        return None
-
-    raw = message.content[0].text.strip()
-
-    # Strip markdown code fences if the model added them.
-    if raw.startswith('```'):
-        raw = raw.split('```')[1]
-        if raw.startswith('json'):
-            raw = raw[4:]
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("AI returned invalid JSON for %s: %s", base_url, exc)
-        return None
-
-    return data if isinstance(data, dict) else None
+def _normalize(text: str) -> str:
+    return re.sub(r'\s+', ' ', str(text)).strip().lower()

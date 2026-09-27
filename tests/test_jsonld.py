@@ -140,3 +140,27 @@ def test_non_numeric_price_is_none():
     html = _page('''{"@type": "Event", "name": "Gig", "startDate": "2026-07-01T20:00:00",
       "offers": {"price": "Donations welcome"}}''')
     assert jsonld.extract(html, URL)['ticket_price'] is None
+
+
+def test_geo_coordinates_are_read():
+    html = _page('''{"@type": "Event", "name": "Show", "startDate": "2026-06-01",
+      "location": {"@type": "Place", "name": "Hall",
+                   "geo": {"@type": "GeoCoordinates", "latitude": "39.1", "longitude": -84.5}}}''')
+    event = jsonld.extract(html, URL)
+    assert (event['location_lat'], event['location_lon']) == (39.1, -84.5)
+
+
+def test_microdata_events_are_found():
+    html = '''<html><body>
+      <div itemscope itemtype="https://schema.org/Event">
+        <span itemprop="name">Microdata Show</span>
+        <meta itemprop="startDate" content="2026-06-01T20:00">
+      </div></body></html>'''
+    assert jsonld.extract(html, URL)['title'] == 'Microdata Show'
+
+
+def test_duplicate_events_across_syntaxes_are_merged():
+    ld = _page('{"@type": "Event", "name": "Dup", "startDate": "2026-06-01"}')
+    md = ('<div itemscope itemtype="https://schema.org/Event"><span itemprop="name">Dup</span>'
+          '<meta itemprop="startDate" content="2026-06-01"></div>')
+    assert len(jsonld.extract_all(ld.replace('</body>', md + '</body>'), URL)) == 1

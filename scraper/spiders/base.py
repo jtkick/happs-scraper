@@ -14,11 +14,9 @@ inherits it and fills any remaining gaps.
 Priority rule (most specific wins):
   detail page data  >  listing page context  >  venue page context
 
-Extractors within a single page follow their own waterfall:
-  1. JSON-LD  (schema.org/Event — free, structured)
-  2. OpenGraph event meta tags
-  3. Site-specific CSS selectors  (event_selectors dict)
-  4. AI fallback via Claude Haiku  (only if ANTHROPIC_API_KEY is set)
+Extraction per page lives in scraper/extraction.py: listing pages yield every
+event (JSON-LD / inline JSON / recipe / AI list); detail pages run the
+JSON-LD → inline JSON → OpenGraph → selectors → AI waterfall.
 
 Subclass contract (minimum):
   name        = 'my_spider'
@@ -28,7 +26,7 @@ Useful overrides for multi-level sites:
   extract_page_context(response) → dict
       Return ambient data from a listing/venue page that should be inherited
       by all child pages (e.g. location, recurring time slot).
-      Do NOT return start_datetime or title — those must come per-event.
+      title / start_datetime / end_datetime are ignored — they must come per-event.
 
   is_intermediate_page(url, response) → bool
       Return True if the URL leads to another listing rather than an event
@@ -54,14 +52,8 @@ from typing import Optional
 
 import scrapy
 
-from scraper.extractors import (
-    jsonld,
-    opengraph,
-    inline_json,
-    tags as tag_matcher,
-    recurrence as recurrence_extractor,
-    dates as dates_extractor,
-)
+from scraper import extraction
+from scraper.extractors import jsonld
 from scraper.items import EventItem
 
 logger = logging.getLogger(__name__)
@@ -164,139 +156,52 @@ class BaseEventSpider(scrapy.Spider):
 
     def parse_event(self, response, **kwargs):
         """
-        Extract one event from a detail page.
+        Extract every event on a page (one for a detail page, many for a
+        listing) — see scraper/extraction.py for the waterfall.
 
-        Inherited context arrives via response.meta['context'] and acts as a
-        fallback: it fills fields that the page's own extractors didn't find,
-        but it never overrides them.
-
-        Priority (high → low):
-          Page JSON-LD  >  Page OpenGraph  >  Page selectors  >  Page AI
-          >  Inherited context from parent listing/venue pages
+        Inherited context arrives via response.meta['context'] and only fills
+        gaps. response.meta['partial'] is this same event as seen on its
+        listing page; it may supply a title/date the detail page lacks.
         """
         inherited: dict = response.meta.get('context', {})
+        partial: Optional[dict] = response.meta.get('partial')
 
-        # page_data collects what this specific page's extractors find.
-        # These always win over inherited context.
-        page_data: dict = {}
-
-        # ── 1 · JSON-LD ───────────────────────────────────────────────────────
-        jl_node = None
-        jl = jsonld.extract(response.text, response.url)
-        if jl:
-            self._merge(page_data, jl)
-            page_data.setdefault('extraction_method', 'jsonld')
-            # Keep the raw node for the recurrence extractor below.
-            try:
-                import extruct
-                from scraper.extractors.jsonld import _find_event
-                jl_data = extruct.extract(
-                    response.text, base_url=response.url,
-                    syntaxes=['json-ld'], uniform=True,
-                )
-                for node in jl_data.get('json-ld', []):
-                    jl_node = _find_event(node)
-                    if jl_node:
-                        break
-            except Exception:
-                pass
-
-        # ── 2 · Inline JS data (always runs — free, supplements structured data) ──
-        inline = inline_json.extract(response.text, response.url)
-        if inline:
-            self._merge_enriched(page_data, inline)
-            page_data.setdefault('extraction_method', 'inline_json')
-
-        # ── 3 · OpenGraph ─────────────────────────────────────────────────────
-        if not self._sufficient(page_data):
-            og = opengraph.extract(response.text, response.url)
-            if og:
-                self._merge(page_data, og)
-                page_data.setdefault('extraction_method', 'opengraph')
-
-        # ── 4 · Site-specific selectors ───────────────────────────────────────
-        if not self._sufficient(page_data):
-            sel = self._extract_selectors(response)
-            if sel:
-                self._merge(page_data, sel)
-                page_data.setdefault('extraction_method', 'selectors')
-
-        # ── 5 · AI fallback ───────────────────────────────────────────────────
-        if not self._sufficient(page_data):
-            ai_data = self._ai_extract(response)
-            if ai_data:
-                self._merge(page_data, ai_data)
-                page_data.setdefault('extraction_method', 'ai')
-
-        # ── Merge: page data first, inherited context fills remaining gaps ─────
-        data: dict = dict(page_data)
-        for key, value in inherited.items():
-            if value is not None and not data.get(key):
-                data[key] = value
-
-        if not data.get('title'):
-            logger.debug("No event data found on %s — skipping", response.url)
-            return
-
-        # ── Recurrence ────────────────────────────────────────────────────────
-        rec = recurrence_extractor.extract(
-            title=data.get('title', ''),
-            description=data.get('description', ''),
-            jsonld_node=jl_node,
-        )
-        if rec:
-            # Only set recurrence fields that aren't already in inherited context
-            for key, value in rec.items():
-                if not data.get(key):
-                    data[key] = value
-
-        # ── Explicit dates (rdates / exdates) ────────────────────────────────
-        # Try clean page text, then inline JS schedule hint (_schedule_text
-        # captured by inline_json from times/schedule/hours fields), then
-        # description as a last resort.
-        clean_text = self._clean_text(response.text)
-        for text_src in filter(None, [clean_text, data.get('_schedule_text'), data.get('description')]):
-            date_info = dates_extractor.extract(text_src)
-            if not date_info:
+        result = self.extract_page(response)
+        text = self._clean_text(response.text) if result.single else None
+        for data, node in result.events:
+            final = extraction.finalize(
+                data, context=inherited, partial=partial, jsonld_node=node, page_text=text)
+            if final is None:
+                logger.debug("No event data found on %s — skipping", response.url)
                 continue
-            if date_info.get('start_datetime') and not data.get('start_datetime'):
-                data['start_datetime'] = date_info['start_datetime']
-            if date_info.get('end_datetime') and not data.get('end_datetime'):
-                data['end_datetime'] = date_info['end_datetime']
-            if date_info.get('rdates'):
-                existing = data.get('rdates') or []
-                data['rdates'] = list(dict.fromkeys(existing + date_info['rdates']))
-            if date_info.get('exdates'):
-                data.setdefault('exdates', [])
-                seen = {e['datetime'] for e in data['exdates']}
-                data['exdates'] += [e for e in date_info['exdates'] if e['datetime'] not in seen]
-            break  # stop after first source that yields results
+            yield self.build_item(final, response)
 
-        # ── Tag matching ──────────────────────────────────────────────────────
-        matched_tags = tag_matcher.match(
-            data.get('title', ''),
-            data.get('description', ''),
-            ctx=data,
+        if not result.events and partial:
+            final = extraction.finalize(partial, context=inherited)
+            if final:
+                yield self.build_item(final, response)
+
+    def extract_page(self, response) -> extraction.PageResult:
+        return extraction.extract_page(
+            response.text, response.url,
+            selectors=self._extract_selectors(response),
+            ai=self._ai_extractor(response),
         )
-        existing = data.get('tag_names') or []
-        data['tag_names'] = list(dict.fromkeys(existing + matched_tags))
 
-        # ── Build item ────────────────────────────────────────────────────────
+    def build_item(self, data: dict, response) -> EventItem:
         item = EventItem()
         item['source_url']        = response.url
         item['extraction_method'] = data.get('extraction_method', 'unknown')
-
         for field in (
             'title', 'description', 'start_datetime', 'end_datetime',
             'location_title', 'location_address', 'location_lat', 'location_lon',
             'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
             'recurrence_freq', 'recurrence_interval', 'recurrence_byday',
             'recurrence_month_mode', 'recurrence_until', 'recurrence_count',
-            'rdates', 'exdates',
+            'rdates', 'exdates', 'timezone', 'evidence', 'drop_reason',
         ):
             item[field] = data.get(field)
-
-        yield item
+        return item
 
     # ── Hooks for subclasses ──────────────────────────────────────────────────
 
@@ -311,7 +216,7 @@ class BaseEventSpider(scrapy.Spider):
           - A recurring time slot implied by the page ("Every Thursday at 8pm")
 
         Return only fields that genuinely apply to all events on the page.
-        Do NOT return start_datetime or title — those must come per-event.
+        title / start_datetime / end_datetime are ignored — they must come per-event.
 
         Example override:
             def extract_page_context(self, response):
@@ -367,47 +272,19 @@ class BaseEventSpider(scrapy.Spider):
                 result[field] = value.strip()
         return result
 
-    def _ai_extract(self, response) -> Optional[dict]:
-        from scraper.extractors import ai
+    def _ai_extractor(self, response):
+        """The AI callable for extract_page, or None when AI is disabled."""
         api_key = self.settings.get('ANTHROPIC_API_KEY', '')
         if not api_key:
             return None
-        return ai.extract(response.text, response.url, api_key)
+        from scraper.extractors import ai
+        venue = (response.meta.get('context') or {}).get('location_title')
+        return lambda html, url: ai.extract_many(html, url, api_key, venue=venue)
 
-    @staticmethod
-    def _sufficient(data: dict) -> bool:
-        """True if we have the minimum two fields the backend requires."""
-        return bool(data.get('title') and data.get('start_datetime'))
-
-    @staticmethod
-    def _merge(base: dict, override: dict) -> None:
-        """
-        Copy non-null values from `override` into `base` without clobbering.
-        'First extractor wins' within a single page.
-        """
-        for key, value in override.items():
-            if value is not None and not base.get(key):
-                base[key] = value
-
-    @staticmethod
-    def _merge_enriched(base: dict, override: dict) -> None:
-        """Like _merge, but also overrides description with a longer value."""
-        for key, value in override.items():
-            if value is None:
-                continue
-            if not base.get(key):
-                base[key] = value
-            elif key == 'description' and isinstance(value, str) and len(value) > len(str(base[key])):
-                base[key] = value
-
-    @staticmethod
-    def _clean_text(html: str) -> Optional[str]:
-        """Extract readable text from HTML using trafilatura, or None if unavailable."""
-        try:
-            import trafilatura
-            return trafilatura.extract(html, include_comments=False, include_tables=False)
-        except ImportError:
-            return None
+    _sufficient = staticmethod(extraction.sufficient)
+    _merge = staticmethod(extraction.merge)
+    _merge_enriched = staticmethod(extraction.merge_enriched)
+    _clean_text = staticmethod(extraction.page_text)
 
     def _handle_error(self, failure):
         logger.error("Request failed: %s — %s", failure.request.url, failure.value)

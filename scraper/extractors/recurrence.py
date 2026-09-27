@@ -174,8 +174,7 @@ def _from_text(text: str) -> Optional[dict]:
         text_lower,
     )
     if m:
-        ordinal_raw = m.group(1).rstrip('stndrh')   # "3rd" → "3"
-        ordinal = _ORDINAL_MAP.get(ordinal_raw, ordinal_raw)
+        ordinal = _ORDINAL_MAP.get(m.group(1))
         day_code = _WEEKDAY_MAP.get(m.group(2))
         if ordinal and day_code:
             return _build(

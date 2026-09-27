@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from scraper.extractors import jsonld, opengraph
-from scraper.extractors.jsonld import extract_all as jsonld_extract_all
+from scraper import extraction
 from tests.conftest import load_fixtures
 
 _ALL = load_fixtures()
@@ -28,45 +27,13 @@ _TEXT = [f for f in _ALL if f['clean_text'] is not None]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _merge_no_overwrite(target: dict, source: dict) -> None:
-    """Copy non-None values from source into target without clobbering existing keys."""
-    for k, v in source.items():
-        if v is not None and k not in target:
-            target[k] = v
-
-
-def _run_waterfall_single(html: str, url: str, seed_ctx: dict) -> dict:
-    """
-    Single-event waterfall: JSON-LD (first) → OpenGraph → seed_context.
-    Mirrors BaseEventSpider.parse_event, minus selectors and AI.
-    """
-    page: dict = {}
-
-    jl = jsonld.extract(html, url)
-    if jl:
-        _merge_no_overwrite(page, jl)
-
-    if not (page.get('title') and page.get('start_datetime')):
-        og = opengraph.extract(html, url)
-        if og:
-            _merge_no_overwrite(page, og)
-
-    result = dict(page)
-    _merge_no_overwrite(result, seed_ctx)
-    return result
-
-
-def _run_waterfall_multi(html: str, url: str, seed_ctx: dict) -> list[dict]:
-    """
-    Multi-event waterfall: all JSON-LD events, each with seed_context as fallback.
-    Used when expected is a list.
-    """
-    results = []
-    for event in jsonld_extract_all(html, url):
-        r = dict(event)
-        _merge_no_overwrite(r, seed_ctx)
-        results.append(r)
-    return results
+def _run(html: str, url: str, seed_ctx: dict) -> list[dict]:
+    """The production path (scraper/extraction.py) minus AI: every event on the page."""
+    result = extraction.extract_page(html, url)
+    text = extraction.page_text(html) if result.single else None
+    events = (extraction.finalize(d, context=seed_ctx, jsonld_node=n, page_text=text)
+              for d, n in result.events)
+    return [e for e in events if e]
 
 
 def _assert_fields(result: dict, expected: dict) -> None:
@@ -94,7 +61,7 @@ def _find_matching_result(results: list[dict], expected_item: dict) -> dict | No
 @pytest.mark.parametrize('fx', _HTML, ids=_HTML_IDS)
 def test_extractor_waterfall(fx):
     """
-    JSON-LD → OpenGraph waterfall + seed context matches fixture expected output.
+    Production extraction (no AI) + seed context matches fixture expected output.
 
     expected can be a single dict (one event) or a list of dicts (multiple events
     embedded in the page's JSON-LD).  For the list case each expected item is
@@ -106,8 +73,8 @@ def test_extractor_waterfall(fx):
 
     seed_ctx = fx['data'].get('seed_context', {})
 
+    results = _run(fx['html'], fx['url'], seed_ctx)
     if isinstance(expected, list):
-        results = _run_waterfall_multi(fx['html'], fx['url'], seed_ctx)
         assert len(results) >= len(expected), (
             f"Expected {len(expected)} events but only extracted {len(results)}"
         )
@@ -118,8 +85,32 @@ def test_extractor_waterfall(fx):
             )
             _assert_fields(match, exp_item)
     else:
-        result = _run_waterfall_single(fx['html'], fx['url'], seed_ctx)
-        _assert_fields(result, expected)
+        assert results, 'no event extracted'
+        _assert_fields(results[0], expected)
+
+
+_LISTINGS = [f for f in _HTML if f['data'].get('expected_events')]
+
+
+@pytest.mark.parametrize('fx', _LISTINGS, ids=[f['id'] for f in _LISTINGS])
+def test_listing_recall(fx):
+    """
+    Listing fixtures: at least `min_recall` (default 100%) of expected_events
+    are extracted, and every matched event has the expected field values.
+    Fixtures written by tools/process_reports.py start with reviewed=false
+    and are skipped until a human confirms their expected values.
+    """
+    if fx['data'].get('reviewed') is False:
+        pytest.skip('fixture expected values not reviewed yet')
+    expected = fx['data']['expected_events']
+    results = _run(fx['html'], fx['url'], fx['data'].get('seed_context', {}))
+    matched = [(exp, _find_matching_result(results, exp)) for exp in expected]
+    found = [(exp, got) for exp, got in matched if got is not None]
+    recall = len(found) / len(expected)
+    assert recall >= fx['data'].get('min_recall', 1.0), (
+        f"recall {recall:.0%}; missing {[e['title'] for e, g in matched if g is None]}")
+    for exp, got in found:
+        _assert_fields(got, exp)
 
 
 # ── AI extractor tests ────────────────────────────────────────────────────────

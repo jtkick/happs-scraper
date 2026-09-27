@@ -89,16 +89,9 @@ class FakeSpider:
 
 
 @pytest.fixture
-def dedup_spider(tmp_path):
-    """A spider whose dedup DB lives in a throwaway directory."""
-    return FakeSpider(DEDUP_DB_PATH=str(tmp_path / 'dedup.db'))
-
-
-@pytest.fixture
-def dedup_pipeline(dedup_spider):
-    """An opened FingerprintDedupPipeline backed by a fresh SQLite file."""
+def dedup_pipeline():
+    """An opened in-run FingerprintDedupPipeline."""
     from scraper.pipelines import FingerprintDedupPipeline
     pipeline = FingerprintDedupPipeline()
-    pipeline.open_spider(dedup_spider)
-    yield pipeline
-    pipeline.close_spider(dedup_spider)
+    pipeline.open_spider(FakeSpider())
+    return pipeline

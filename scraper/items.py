@@ -31,10 +31,12 @@ class EventItem(scrapy.Item):
 
     # ── Scraper metadata (not forwarded to API) ───────────────────────────────
     source_url          = scrapy.Field()   # listing/detail page that was scraped
-    fingerprint         = scrapy.Field()   # sha256 dedup hash (set by pipeline)
-    extraction_method   = scrapy.Field()   # 'jsonld' | 'opengraph' | 'selectors' | 'ai'
-
-    # Set by FingerprintDedupPipeline when this is a repeat scrape of a
-    # recurring event whose backend record already exists.
-    is_recurring_update = scrapy.Field()   # bool
-    backend_event_id    = scrapy.Field()   # UUID str of the existing backend event
+    fingerprint         = scrapy.Field()   # '<source>:<sha256>' — backend upsert key (set by pipeline)
+    extraction_method   = scrapy.Field()   # 'jsonld' | 'inline_json' | 'opengraph' | 'selectors' | 'recipe' | 'platform:<name>' | 'ai'
+    source_id           = scrapy.Field()   # backend Source UUID, when crawled from one
+    timezone            = scrapy.Field()   # IANA zone for naive page datetimes, e.g. 'America/New_York'
+    confidence          = scrapy.Field()   # 0–1, set by ValidatePipeline
+    review_required     = scrapy.Field()   # bool, set by ValidatePipeline
+    evidence            = scrapy.Field()   # verbatim date snippet (AI extractions)
+    drop_reason         = scrapy.Field()   # set when an extractor already knows the item is bad
+    ingest_status       = scrapy.Field()   # 'created' | 'updated' | 'unchanged' | 'failed' (APISubmitPipeline)
