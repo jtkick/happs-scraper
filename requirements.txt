@@ -1,0 +1,9 @@
+scrapy>=2.11
+extruct>=0.16          # JSON-LD, OpenGraph, microdata extraction in one shot
+trafilatura>=1.12      # strips HTML to clean prose for AI
+dateparser>=1.2        # flexible date/time string parsing
+anthropic>=0.30        # Claude Haiku AI fallback
+python-dotenv>=1.0
+requests>=2.31
+w3lib>=2.1
+Pillow>=10.0           # image size validation
