@@ -9,3 +9,4 @@ etags.db
 venv/
 dist/
 *.egg-info/
+.claude/worktrees/

@@ -35,6 +35,12 @@
 - `pip install -r requirements-dev.txt`
 - `cp .env.example .env` then fill in `HAPPS_API_BASE` and `HAPPS_SCRAPER_TOKEN`
 
+## Worktrees
+- Sessions often run in `.claude/worktrees/<name>/` on a `worktree-<name>` branch cut from `origin/main`
+- No venv there; use the main checkout's `/home/jared/Development/happs-scraper/.venv/bin/python` (`-m pytest`, `-m scrapy`)
+- `.worktreeinclude` copies in `.env`
+- Land on `main`: commit, then `git fetch origin && git rebase origin/main && git push origin HEAD:main`
+
 ## Workflow
 - Register sources: `python tools/seed_sources.py --lat F --lon F --radius-km N` (or `--city`, or `--url … --kind aggregator`)
 - Crawl due sources: `scrapy crawl generic -a limit=N`; one source: `-a source=<domain>`; ad hoc (nothing reported): `-a url=<url>`; force rediscovery: `-a relearn=1`
