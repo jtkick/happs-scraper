@@ -18,6 +18,7 @@ import random
 from scrapy.exceptions import IgnoreRequest
 from scrapy.http import Response
 
+from scraper.metakeys import CACHEABLE, CONDITIONAL, RENDER_IF_CHANGED
 logger = logging.getLogger(__name__)
 
 # A realistic cross-browser pool.  Extend as needed.
@@ -44,6 +45,10 @@ _USER_AGENTS = [
 ]
 
 
+class NotModified(IgnoreRequest):
+    """A listing page answered 304; its events were reported as still listed."""
+
+
 class RotatingUserAgentMiddleware:
     """Assign a random user-agent from the pool to each outgoing request."""
 
@@ -61,10 +66,10 @@ class ConditionalFetchMiddleware:
     """
     Skip unchanged listing pages without losing track of their events.
 
-    Requests marked meta['cacheable'] (listing pages) have their validators
+    Requests marked meta[CACHEABLE] (listing pages) have their validators
     (ETag / Last-Modified) stored in the run's page state (scraper/page_state.py,
     kept by the backend between runs); the run tracker stores which event
-    fingerprints each page produced. Requests also marked meta['conditional']
+    fingerprints each page produced. Requests also marked meta[CONDITIONAL]
     send the validators — but only when both are on file — and a 304 hands
     the page's remembered fingerprints to the tracker as "still listed".
     Without that, an unchanged page would look like its events vanished.
@@ -72,7 +77,7 @@ class ConditionalFetchMiddleware:
     Never used for detail pages (scraper/page_state.py decides those).
 
     Chromium aborts a navigation answered 304, so a rendered request with
-    validators on file is sent raw instead, marked meta['render_if_changed'];
+    validators on file is sent raw instead, marked meta[RENDER_IF_CHANGED];
     the spider renders the page only when it comes back changed.
     """
 
@@ -84,14 +89,14 @@ class ConditionalFetchMiddleware:
         return cls(crawler)
 
     def process_request(self, request, spider=None):
-        if not request.meta.get('conditional'):
+        if not request.meta.get(CONDITIONAL):
             return None
         page = self._page(request, spider)
         if not page or 'fingerprints' not in page or not (page.get('etag') or page.get('last_modified')):
             return None
         if request.meta.get('playwright'):
             meta = {k: v for k, v in request.meta.items() if not k.startswith('playwright')}
-            return request.replace(meta={**meta, 'render_if_changed': True}, dont_filter=True)
+            return request.replace(meta={**meta, RENDER_IF_CHANGED: True}, dont_filter=True)
         if page.get('etag'):
             request.headers['If-None-Match'] = page['etag']
         if page.get('last_modified'):
@@ -99,7 +104,7 @@ class ConditionalFetchMiddleware:
         return None
 
     def process_response(self, request, response: Response, spider=None):
-        if not request.meta.get('cacheable'):
+        if not request.meta.get(CACHEABLE):
             return response
         tracker = self._tracker(spider)
         run = tracker.for_request(request) if tracker is not None else None
@@ -107,7 +112,7 @@ class ConditionalFetchMiddleware:
             if tracker is not None:
                 page = run.pages.get(request.url) if run else None
                 tracker.not_modified(request, (page or {}).get('fingerprints') or [])
-            raise IgnoreRequest(f"304 Not Modified: {request.url}")
+            raise NotModified(f"304 Not Modified: {request.url}")
         etag = response.headers.get('ETag', b'').decode('utf-8', errors='ignore')
         lm = response.headers.get('Last-Modified', b'').decode('utf-8', errors='ignore')
         if run is not None and (etag or lm or run.pages.get(request.url)):

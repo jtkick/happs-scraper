@@ -20,6 +20,7 @@ import random
 from typing import Optional
 
 from scraper.pipelines import dry_run
+from scraper.metakeys import AI_RESPONSE, CONTEXT, PARTIAL, RECIPE, SOURCE_ID
 from scraper.util import now_iso
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ class SnapshotSampler:
             return None
         kept, dropped = dry_run([spider.build_item(e, response) for e in events], spider)
         meta = response.meta
-        recipe = meta.get('recipe') or {}
+        recipe = meta.get(RECIPE) or {}
         reasons = []
         if result.ai_used:
             reasons.append('ai')
@@ -68,19 +69,19 @@ class SnapshotSampler:
             return None
 
         self.pending.append({
-            'source_id': meta.get('source_id'),
+            'source_id': meta.get(SOURCE_ID),
             'url': response.url,
             'captured_at': now_iso(),
             'reason': ','.join(reasons),
             'html_gz': base64.b64encode(gzip.compress(response.body)).decode(),
             'parsed': {'strategy': result.strategy, 'ai_used': result.ai_used,
                        'events': kept, 'dropped': dropped},
-            'ai_response': meta.get('ai_response'),
+            'ai_response': meta.get(AI_RESPONSE),
             'context': {
                 'kind': kind,
-                'seed_context': meta.get('context') or {},
+                'seed_context': meta.get(CONTEXT) or {},
                 'recipe': recipe if recipe.get('item_css') else {},
-                'partial': meta.get('partial'),
+                'partial': meta.get(PARTIAL),
                 'platform': platform,
             },
         })

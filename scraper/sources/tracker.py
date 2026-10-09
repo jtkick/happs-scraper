@@ -15,6 +15,7 @@ from typing import Optional
 
 from scraper import follow
 from scraper.discovery.sitemap import SitemapRead
+from scraper.metakeys import LISTING_URL, PAGE_URL, RUN_KEY, STAGE
 from scraper.page_state import PageState
 from scraper.util import now_iso
 
@@ -110,7 +111,7 @@ class RunTracker:
         return run
 
     def for_request(self, request) -> Optional[SourceRun]:
-        return self.runs.get(request.meta.get('run_key'))
+        return self.runs.get(request.meta.get(RUN_KEY))
 
     # ── Signals ───────────────────────────────────────────────────────────────
 
@@ -141,11 +142,11 @@ class RunTracker:
         run.seen.add(item['fingerprint'])
         run.status_counts[item.get('ingest_status') or 'unknown'] += 1
         meta = getattr(response, 'meta', None) or {}
-        page = meta.get('listing_url') or (response.url if meta.get('stage') == 'listing' else None)
+        page = meta.get(LISTING_URL) or (response.url if meta.get(STAGE) == 'listing' else None)
         if page:
             run.page_fps.setdefault(page, set()).add(item['fingerprint'])
-        if meta.get('page_url'):
-            run.detail_fps.setdefault(meta['page_url'], set()).add(item['fingerprint'])
+        if meta.get(PAGE_URL):
+            run.detail_fps.setdefault(meta[PAGE_URL], set()).add(item['fingerprint'])
 
     def item_dropped(self, item, response=None, exception=None, spider=None):
         run = self._run_for_item(item, response)
@@ -233,7 +234,7 @@ class RunTracker:
             self.client.update_source(run.source_id, update)
 
     def _run_for_item(self, item, response) -> Optional[SourceRun]:
-        if response is not None and response.meta.get('run_key') in self.runs:
-            return self.runs[response.meta['run_key']]
+        if response is not None and response.meta.get(RUN_KEY) in self.runs:
+            return self.runs[response.meta[RUN_KEY]]
         sid = item.get('source_id')
         return self.runs.get(sid) if sid else None

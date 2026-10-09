@@ -363,7 +363,9 @@ def test_changed_page_from_a_raw_check_is_fetched_rendered():
 
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
-from scrapy.exceptions import DontCloseSpider, IgnoreRequest  # noqa: E402
+from scrapy.exceptions import DontCloseSpider  # noqa: E402
+
+from scraper.middlewares import NotModified  # noqa: E402
 
 from scraper import extraction, page_state  # noqa: E402
 
@@ -447,7 +449,7 @@ def test_parsed_detail_page_is_recorded():
 def test_304_listing_refreshes_its_stale_detail_pages():
     spider, request = spider_with(jazz_record(fetched_at=ago(8)),
                                   {**jazz_record(), 'url': 'https://venue.test/events/fresh'})
-    failure = _failure(request, IgnoreRequest('304 Not Modified: ' + EVENTS))
+    failure = _failure(request, NotModified('304 Not Modified: ' + EVENTS))
     [detail] = list(spider._errback(failure))
     assert detail.url == JAZZ and detail.meta['refetch'] == 'max_age'
     assert detail.meta['partial']['title'] == 'Jazz'

@@ -4,9 +4,11 @@ Rendering in headless Chromium (scrapy-playwright), when PLAYWRIGHT_ENABLED.
 Every HTML page a spider fetches is rendered, so text JavaScript draws
 (listing cards, schedules filled in from an API) is in the response.
 Feeds (iCal, JSON) and sitemaps are fetched raw. A page whose render fails
-is fetched once more raw (meta['render_failed']) rather than lost.
+is fetched once more raw (meta[RENDER_FAILED]) rather than lost.
 """
 from __future__ import annotations
+
+from scraper.metakeys import CACHEABLE, CONDITIONAL, RENDER_FAILED, RENDER_IF_CHANGED
 
 # After the load event, how long to wait for XHR-filled content to settle.
 SETTLE_MS = 5000
@@ -47,17 +49,17 @@ def rendered_after_check(request, settings):
     The page again, rendered, after a raw conditional check came back changed
     (ConditionalFetchMiddleware); None when the request wasn't such a check.
     """
-    if not request.meta.get('render_if_changed'):
+    if not request.meta.get(RENDER_IF_CHANGED):
         return None
     meta = {k: v for k, v in request.meta.items()
-            if k not in ('render_if_changed', 'conditional', 'cacheable')}
+            if k not in (RENDER_IF_CHANGED, CONDITIONAL, CACHEABLE)}
     headers = {k: v for k, v in request.headers.items() if k not in _CONDITIONAL_HEADERS}
     return request.replace(meta={**meta, **render_meta(settings)}, headers=headers, dont_filter=True)
 
 
 def raw_retry(request):
     """The same request without the browser, after a failed render; None if it wasn't rendered."""
-    if not request.meta.get('playwright') or request.meta.get('render_failed'):
+    if not request.meta.get('playwright') or request.meta.get(RENDER_FAILED):
         return None
     meta = {k: v for k, v in request.meta.items() if not k.startswith('playwright')}
-    return request.replace(meta={**meta, 'render_failed': True}, dont_filter=True)
+    return request.replace(meta={**meta, RENDER_FAILED: True}, dont_filter=True)

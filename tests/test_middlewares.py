@@ -1,9 +1,8 @@
 """Tests for scraper/middlewares.py — ConditionalFetchMiddleware."""
 import pytest
-from scrapy.exceptions import IgnoreRequest
 from scrapy.http import Request, Response
 
-from scraper.middlewares import ConditionalFetchMiddleware
+from scraper.middlewares import ConditionalFetchMiddleware, NotModified
 from scraper.sources.tracker import RunTracker
 
 URL = 'https://x.test/events'
@@ -62,14 +61,14 @@ def test_other_requests_are_untouched(mw, spider):
 
 def test_304_carries_the_pages_events_to_the_tracker(mw, spider):
     known(spider, fingerprints=['fp1', 'fp2'])
-    with pytest.raises(IgnoreRequest):
+    with pytest.raises(NotModified):
         mw.process_response(listing(spider), Response(URL, status=304))
     assert spider.run.seen == {'fp1', 'fp2'} and spider.run.not_modified == 1
 
 
 def test_304_with_spider_passed_explicitly(spider):
     known(spider)
-    with pytest.raises(IgnoreRequest):
+    with pytest.raises(NotModified):
         ConditionalFetchMiddleware().process_response(listing(spider), Response(URL, status=304), spider)
     assert spider.run.seen == {'fp1'}
 

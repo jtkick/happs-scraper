@@ -19,7 +19,7 @@ Per source:
      event's detail page when the listing lacks its date or description
      ("required"), or when the page probably says more ("soft": a cut-off
      description, no address, no end, a multi-day span with no schedule),
-     carrying the listing data along as meta['partial']. Soft follows leave
+     carrying the listing data along as meta[PARTIAL]. Soft follows leave
      GENERIC_DETAIL_RESERVE of the budget for required ones, and the recipe
      learns whether they help (`detail_useful`). Paginate.
      With PLAYWRIGHT_ENABLED every HTML page is rendered (scraper/rendering.py).
@@ -51,6 +51,11 @@ from scraper.discovery.events_page import (
 )
 from scraper.extractors import recipe as recipe_extractor
 from scraper.items import EventItem, event_item
+from scraper.metakeys import (
+    AI_RESPONSE, CACHEABLE, CARRIED, CONDITIONAL, CONTEXT, DETAIL_REASON, LISTING_URL, PAGE_URL, PARTIAL,
+    PLATFORM, RECIPE, REFETCH, RENDER_FAILED, ROBOTS, ROOT, RUN_KEY, SOURCE_ID, STAGE,
+)
+from scraper.middlewares import NotModified
 from scraper.platforms.base import Platform
 from scraper.rendering import raw_retry, render_meta, rendered_after_check
 from scraper.snapshots import SnapshotSampler
@@ -141,10 +146,10 @@ class GenericEventSpider(scrapy.Spider):
         known = self.client.pages(source['id']) if self.client and source.get('id') and not relearn else []
         run = self.tracker.start(source, relearning=relearn, pages=known)
         meta = {
-            'run_key': run.key,
-            'source_id': source.get('id'),
-            'context': source.get('context') or {},
-            'recipe': recipe,
+            RUN_KEY: run.key,
+            SOURCE_ID: source.get('id'),
+            CONTEXT: source.get('context') or {},
+            RECIPE: recipe,
         }
         # Only a healthy, known site may skip unchanged pages.
         conditional = not relearn and source.get('status') == 'active'
@@ -212,7 +217,7 @@ class GenericEventSpider(scrapy.Spider):
         `requests`, so skip decisions can use them. Straight away when there
         are no stored detail pages to skip, no sitemap, or it lied before.
         """
-        recipe = meta['recipe']
+        recipe = meta[RECIPE]
         wanted = (any(p.get('kind') == 'detail' for p in run.pages.pages.values())
                   and recipe.get('lastmod_trusted') is not False and recipe.get('sitemap_urls') != [])
         if not wanted:
@@ -226,40 +231,40 @@ class GenericEventSpider(scrapy.Spider):
         Fetch run.sitemaps raw: the recipe's sitemap_urls, else those robots.txt
         names, else /sitemap.xml. _sitemaps_read carries on once the last is in.
         """
-        roots = meta['recipe'].get('sitemap_urls')
+        roots = meta[RECIPE].get('sitemap_urls')
         if roots is None:
             yield self._sitemap_request(urljoin(base_url, '/robots.txt'), meta, run,
-                                        self.parse_robots_sitemaps, robots=True)
+                                        self.parse_robots_sitemaps, {ROBOTS: True})
         elif not roots:
             yield from self._sitemaps_read(run, meta)
         for url in (roots or [])[:sitemap.MAX_ROOTS]:
-            yield self._sitemap_request(url, meta, run, self.parse_sitemap, root=True)
+            yield self._sitemap_request(url, meta, run, self.parse_sitemap, {ROOT: True})
 
     def parse_robots_sitemaps(self, response):
         run, meta = self._run(response), self._carry(response)
         for url in sitemap.roots(response.body, response.url):
-            yield self._sitemap_request(url, meta, run, self.parse_sitemap, root=True)
+            yield self._sitemap_request(url, meta, run, self.parse_sitemap, {ROOT: True})
         yield from self._sitemap_done(run, meta)
 
     def parse_sitemap(self, response):
         run, meta = self._run(response), self._carry(response)
         kind, entries = sitemap.parse(response.body)
-        for url in run.sitemaps.add(response.request.url, kind, entries, root=response.meta.get('root')):
+        for url in run.sitemaps.add(response.request.url, kind, entries, root=response.meta.get(ROOT)):
             yield self._sitemap_request(url, meta, run, self.parse_sitemap)
         yield from self._sitemap_done(run, meta)
 
     def _sitemap_failed(self, failure):
         request = failure.request
         run, meta = self.tracker.for_request(request), self._carry(request)
-        if request.meta.get('robots'):
+        if request.meta.get(ROBOTS):
             yield self._sitemap_request(urljoin(request.url, '/sitemap.xml'), meta, run,
-                                        self.parse_sitemap, root=True)
+                                        self.parse_sitemap, {ROOT: True})
         yield from self._sitemap_done(run, meta)
 
-    def _sitemap_request(self, url, meta, run, callback, **extra):
+    def _sitemap_request(self, url, meta, run, callback, extra=None):
         run.sitemaps.pending += 1
         return scrapy.Request(url, callback=callback, errback=self._sitemap_failed, dont_filter=True,
-                              meta={**meta, 'stage': 'sitemap', **extra})
+                              meta={**meta, STAGE: 'sitemap', **(extra or {})})
 
     def _sitemap_done(self, run, meta):
         run.sitemaps.pending -= 1
@@ -268,7 +273,7 @@ class GenericEventSpider(scrapy.Spider):
 
     def _sitemaps_read(self, run, meta):
         read, run.sitemaps = run.sitemaps, None
-        if meta['recipe'].get('sitemap_urls') is None:
+        if meta[RECIPE].get('sitemap_urls') is None:
             self.tracker.learn(run, 'heuristic', sitemap_urls=list(dict.fromkeys(read.roots)))
         run.lastmod = read.lastmod
         if read.purpose == 'discover':
@@ -287,7 +292,7 @@ class GenericEventSpider(scrapy.Spider):
         run.listing_pages += 1
         self.tracker.page_fetched(response.request, response.url)
         meta = self._carry(response)
-        recipe = meta['recipe']
+        recipe = meta[RECIPE]
 
         if not recipe.get('platform'):
             found = yield from self._maybe_platform(response, meta, run)
@@ -295,7 +300,7 @@ class GenericEventSpider(scrapy.Spider):
                 return
 
         result, events = extraction.parse_page(response, kind='listing', recipe=recipe,
-                                               context=meta['context'], ai=self._ai_extractor(response))
+                                               context=meta[CONTEXT], ai=self._ai_extractor(response))
         run.strategies[result.strategy] += len(result.events)
         if recipe.get('item_css') and result.strategy == 'ai':
             run.strategy_fallback = True
@@ -340,7 +345,7 @@ class GenericEventSpider(scrapy.Spider):
                     continue
             reason = follow.detail_reason(data) if detail_url else None
             if reason and follow.may_follow(
-                    reason, budget=self._detail_budget(run), detail_useful=meta['recipe'].get('detail_useful'),
+                    reason, budget=self._detail_budget(run), detail_useful=meta[RECIPE].get('detail_useful'),
                     reserve=self.settings.getint('GENERIC_DETAIL_RESERVE', 15), soft_scheduled=run.soft_scheduled):
                 run.soft_scheduled += reason == 'soft'
                 yield self._detail_request(detail_url, meta, run, response.url, partial=data,
@@ -392,7 +397,7 @@ class GenericEventSpider(scrapy.Spider):
         if adapter is None:
             return False
         if adapter.rerender_only:
-            if response.meta.get('playwright') or response.meta.get('render_failed'):
+            if response.meta.get('playwright') or response.meta.get(RENDER_FAILED):
                 return False            # already rendered (or tried) — carry on normally
             if not self.settings.getbool('PLAYWRIGHT_ENABLED'):
                 message = f'needs_js ({adapter.name}): {response.url}'
@@ -401,9 +406,9 @@ class GenericEventSpider(scrapy.Spider):
                 return False
             logger.info("%s: %s page, re-requesting rendered", response.url, adapter.name)
             self.tracker.learn(run, 'heuristic', render_js=True)
-            meta['recipe'] = {**meta['recipe'], 'render_js': True}
+            meta[RECIPE] = {**meta[RECIPE], 'render_js': True}
             yield response.request.replace(
-                meta={**meta, 'stage': response.meta.get('stage'), 'playwright': True},
+                meta={**meta, STAGE: response.meta.get(STAGE), 'playwright': True},
                 dont_filter=True)
             return True
         urls = adapter.feed_urls(response)
@@ -411,7 +416,7 @@ class GenericEventSpider(scrapy.Spider):
             return False
         logger.info("%s: detected platform %s", response.url, adapter.name)
         self.tracker.learn(run, 'platform', platform=adapter.name, platform_urls=urls)
-        meta = {**meta, 'recipe': {**meta['recipe'], 'platform': adapter.name}}
+        meta = {**meta, RECIPE: {**meta[RECIPE], 'platform': adapter.name}}
         for url in urls:
             yield self._platform_request(url, adapter, meta, run)
         return True
@@ -419,14 +424,14 @@ class GenericEventSpider(scrapy.Spider):
     def _platform_request(self, url, adapter, meta, run):
         # Feeds (iCal, JSON) are fetched raw; an adapter that only locates an HTML page is rendered.
         html_page = adapter.render_js or type(adapter).parse is Platform.parse
-        return self._request(url, self.parse_platform, {**meta, 'platform': adapter.name},
+        return self._request(url, self.parse_platform, {**meta, PLATFORM: adapter.name},
                              'listing', run, render=html_page)
 
     def parse_platform(self, response):
         run = self._run(response)
-        adapter = platforms.get(response.meta['platform'])
+        adapter = platforms.get(response.meta[PLATFORM])
         meta = self._carry(response)
-        finals = extraction.parse_feed(adapter, response, context=meta['context'])
+        finals = extraction.parse_feed(adapter, response, context=meta[CONTEXT])
         if finals is None:           # adapter only locates the page; extract it generically
             yield from self.parse_listing(response)
             return
@@ -446,12 +451,12 @@ class GenericEventSpider(scrapy.Spider):
 
     def parse_event(self, response):
         """
-        A detail page. meta['partial'] is this same event as its listing showed
+        A detail page. meta[PARTIAL] is this same event as its listing showed
         it; the page wins, the partial fills its gaps (scraper/extraction.py).
         """
         result, events = extraction.parse_page(
-            response, kind='detail', context=response.meta.get('context', {}),
-            partial=response.meta.get('partial'), ai=self._ai_extractor(response))
+            response, kind='detail', context=response.meta.get(CONTEXT, {}),
+            partial=response.meta.get(PARTIAL), ai=self._ai_extractor(response))
         run = self._run(response)
         if run:
             run.detail_pages += 1
@@ -463,8 +468,8 @@ class GenericEventSpider(scrapy.Spider):
     def page_parsed(self, response, result, events, kind):
         if kind == 'detail':
             self._record_detail(response, events)
-        if kind == 'detail' and response.meta.get('detail_reason') == 'soft':
-            partial = response.meta.get('partial') or {}
+        if kind == 'detail' and response.meta.get(DETAIL_REASON) == 'soft':
+            partial = response.meta.get(PARTIAL) or {}
             self.tracker.soft_detail_parsed(
                 response.request, any(extraction.added_info(partial, e) for e in events))
         if self.snapshots:
@@ -472,10 +477,10 @@ class GenericEventSpider(scrapy.Spider):
 
     def _record_detail(self, response, events):
         """Remember what this detail page parsed to; its fingerprints are added at flush."""
-        url, run = response.meta.get('page_url'), self._run(response)
+        url, run = response.meta.get(PAGE_URL), self._run(response)
         if not url or run is None:
             return
-        partial = response.meta.get('partial')
+        partial = response.meta.get(PARTIAL)
         new_hash = page_state.content_hash(events)
         if page_state.lastmod_missed_change(run.pages.get(url), content_hash=new_hash,
                                             lastmod=run.lastmod.get(sitemap.key(url)),
@@ -484,14 +489,14 @@ class GenericEventSpider(scrapy.Spider):
             self.tracker.learn(run, 'heuristic', lastmod_trusted=False)
         now = now_iso()
         run.pages.update(
-            url, 'detail', listing_url=response.meta.get('listing_url') or '',
+            url, 'detail', listing_url=response.meta.get(LISTING_URL) or '',
             listing_data={k: v for k, v in partial.items() if not k.startswith('_')} if partial else None,
             listing_hash=page_state.listing_hash(partial) if partial else '',
             content_hash=new_hash, fingerprints=[], extraction_version=extraction.EXTRACTION_VERSION,
             fetched_at=now, last_listed_at=now)
 
     def build_item(self, data: dict, response) -> EventItem:
-        return event_item(data, source_url=response.url, source_id=response.meta.get('source_id'))
+        return event_item(data, source_url=response.url, source_id=response.meta.get(SOURCE_ID))
 
     def _ai_extractor(self, response):
         """The AI callable for extract_page, or None when AI is disabled."""
@@ -500,16 +505,16 @@ class GenericEventSpider(scrapy.Spider):
             return None
         from scraper.extractors import ai
         # The answer is kept on the response so a page snapshot can carry it.
-        record = lambda answer: response.meta.__setitem__('ai_response', answer)  # noqa: E731
-        return ai.extractor(api_key, venue=(response.meta.get('context') or {}).get('location_title'),
+        record = lambda answer: response.meta.__setitem__(AI_RESPONSE, answer)  # noqa: E731
+        return ai.extractor(api_key, venue=(response.meta.get(CONTEXT) or {}).get('location_title'),
                             respond=ai.recorder(api_key, record))
 
     # ── Requests & bookkeeping ────────────────────────────────────────────────
 
-    def _request(self, url, callback, meta, stage, run, dont_filter=False, render=None, **extra_meta):
-        meta = {**meta, 'stage': stage, **extra_meta}
+    def _request(self, url, callback, meta, stage, run, dont_filter=False, render=None, extra=None):
+        meta = {**meta, STAGE: stage, **(extra or {})}
         if render is None:
-            render = stage in _RENDERED_STAGES or meta.get('recipe', {}).get('render_js')
+            render = stage in _RENDERED_STAGES or meta.get(RECIPE, {}).get('render_js')
         if render:
             meta.update(render_meta(self.settings))
         if stage == 'listing':
@@ -520,18 +525,18 @@ class GenericEventSpider(scrapy.Spider):
                               dont_filter=dont_filter)
 
     def _listing_request(self, url, meta, run, conditional=False, dont_filter=False):
-        return self._request(url, self.parse_listing, meta, 'listing', run,
-                             dont_filter=dont_filter, conditional=conditional, cacheable=True)
+        return self._request(url, self.parse_listing, meta, 'listing', run, dont_filter=dont_filter,
+                             extra={CONDITIONAL: conditional, CACHEABLE: True})
 
     def _detail_request(self, url, meta, run, listing_url, partial=None, detail_reason=None,
                         refetch=None):
-        return self._request(url, self.parse_event, meta, 'detail', run, partial=partial,
-                             listing_url=listing_url, detail_reason=detail_reason,
-                             page_url=url, refetch=refetch)
+        return self._request(url, self.parse_event, meta, 'detail', run, extra={
+            PARTIAL: partial, LISTING_URL: listing_url, DETAIL_REASON: detail_reason,
+            PAGE_URL: url, REFETCH: refetch})
 
     def _errback(self, failure):
         request = failure.request
-        if failure.check(IgnoreRequest) and '304' in str(failure.value):
+        if failure.check(NotModified):
             yield from self._refresh_stale_details(request)
             return
         retry = None if failure.check(HttpError, IgnoreRequest) else raw_retry(request)
@@ -542,19 +547,17 @@ class GenericEventSpider(scrapy.Spider):
             logger.warning("Render failed: %s — %s; fetching it raw", request.url, failure.value)
             yield retry
             return
-        stage = request.meta.get('stage', 'detail')
+        stage = request.meta.get(STAGE, 'detail')
         self.tracker.error(request, failure, stage)
         logger.warning("%s request failed: %s — %s", stage, request.url, failure.value)
-        partial = request.meta.get('partial')
+        partial = request.meta.get(PARTIAL)
         if stage == 'detail' and partial:
             # The listing already had this event; don't lose it with its page.
             item = self.build_item(partial, request)
             yield item
 
-    _CARRIED = ('run_key', 'source_id', 'context', 'recipe')
-
     def _carry(self, response) -> dict:
-        return {k: response.meta[k] for k in self._CARRIED if k in response.meta}
+        return {k: response.meta[k] for k in CARRIED if k in response.meta}
 
     def _run(self, response) -> Optional[SourceRun]:
         return self.tracker.for_request(response.request if hasattr(response, 'request') else response)
