@@ -76,3 +76,17 @@ def test_crawler_command_keeps_claiming():
     command = crawler_command(batch=5, budget_minutes=20)
     assert command[1:5] == ['-m', 'scrapy', 'crawl', 'generic']
     assert 'keep_claiming=1' in command and 'batch=5' in command and 'budget_minutes=20' in command
+
+
+def test_each_tick_captures_requested_pages_and_survives_failures():
+    calls = []
+
+    def capture():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('backend down')
+        return 0
+    p = Pool(FakeClient(15, 15), FakeProcess, max_crawlers=3, per_crawler=10, capture=capture)
+    p.tick()
+    p.tick()
+    assert len(calls) == 2 and len(p.crawlers) == 2

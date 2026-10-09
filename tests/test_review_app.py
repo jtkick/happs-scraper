@@ -117,15 +117,16 @@ def test_discard(client, dirs):
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 class FakeBackend:
-    def __init__(self, snapshots=(), corrections=(), html=LISTING):
+    def __init__(self, snapshots=(), corrections=(), html=LISTING, uncaptured=()):
         self._snapshots, self._corrections, self.html = list(snapshots), list(corrections), html
+        self.uncaptured = set(uncaptured)
         self.updates = []
 
     def snapshots(self, status='pending'):
         return self._snapshots
 
     def snapshot_html(self, snapshot_id):
-        return self.html
+        return None if snapshot_id in self.uncaptured else self.html
 
     def update_snapshot(self, snapshot_id, data):
         self.updates.append(('snapshot', snapshot_id, data))
@@ -189,6 +190,86 @@ def test_sync_turns_a_rejection_into_a_not_event(dirs, monkeypatch):
     [case_id] = _pull(monkeypatch, FakeBackend(corrections=[correction]))
     case = Case.load(dirs[0] / case_id)
     assert case.events == [] and case.not_events == ['Pub Quiz']
+
+
+def _event(**fields):
+    """A corrected event as the backend sends it: every field, empty ones null."""
+    event = dict.fromkeys(('description', 'end_datetime', 'location_title', 'location_address',
+                           'location_lat', 'location_lon', 'ticket_price', 'ticket_url',
+                           'recurrence_until', 'recurrence_count'))
+    event.update({'title': 'Jazz Night', 'start_datetime': '2027-04-08T23:00:00+00:00',
+                  'url': SNAPSHOT['url'], 'recurrence_freq': 'none', 'recurrence_interval': 1,
+                  'recurrence_byday': [], 'recurrence_month_mode': 'day', 'tag_names': []})
+    event.update(fields)
+    return event
+
+
+TWO_JAZZ_NIGHTS = {'strategy': 'jsonld', 'dropped': [], 'events': [
+    {'title': 'Jazz Night', 'start_datetime': '2027-04-01T23:00:00+00:00', 'image_url': 'https://venue.test/a.jpg'},
+    {'title': 'Jazz Night', 'start_datetime': '2027-04-08T23:00:00+00:00', 'image_url': 'https://venue.test/b.jpg'},
+]}
+
+
+def _correction(**fields):
+    from scraper.pipelines import source_fingerprint
+    correction = {
+        'id': 'corr-777777', 'kind': 'edit', 'user': 'sam', 'source_url': SNAPSHOT['url'],
+        'created_at': '2027-03-15T12:00:00+00:00', 'context': {}, 'notes': '',
+        'snapshot': {**SNAPSHOT, 'status': 'captured', 'parsed': TWO_JAZZ_NIGHTS},
+        'fingerprint': source_fingerprint(TWO_JAZZ_NIGHTS['events'][1], 'src-1'),
+        'before': _event(), 'after': _event(), 'changed': [],
+    }
+    correction.update(fields)
+    return correction
+
+
+def test_sync_labels_a_curators_fix_on_the_event_it_was_parsed_as(dirs, monkeypatch):
+    correction = _correction(after=_event(title='Jazz Night (sold out)', ticket_price=12.0),
+                             changed=['ticket_price', 'title'], notes='The page says $12.')
+    [case_id] = _pull(monkeypatch, FakeBackend(corrections=[correction]))
+    case = Case.load(dirs[0] / case_id)
+    [label] = case.events
+    assert label['image_url'] == 'https://venue.test/b.jpg'          # the second Jazz Night, by fingerprint
+    assert (label['title'], label['ticket_price']) == ('Jazz Night (sold out)', 12.0)
+    assert label['description'] is None and 'recurrence_interval' not in label
+    assert 'url' not in label                  # the page's own address, which the scraper falls back to
+    assert case.notes == 'sam corrected ticket_price, title.\nThe page says $12.'
+    assert case.parsed == TWO_JAZZ_NIGHTS
+
+
+def test_sync_turns_a_confirmation_into_a_label(dirs, monkeypatch):
+    [case_id] = _pull(monkeypatch, FakeBackend(corrections=[_correction(kind='confirm')]))
+    case = Case.load(dirs[0] / case_id)
+    [label] = case.events
+    assert label['title'] == 'Jazz Night' and label['start_datetime'] == '2027-04-08T23:00:00+00:00'
+    assert case.notes == 'sam confirmed “Jazz Night” is right.'
+
+
+def test_a_fix_that_stops_an_event_recurring_asserts_it(dirs, monkeypatch):
+    weekly = {**TWO_JAZZ_NIGHTS['events'][1], 'recurrence_freq': 'weekly', 'recurrence_byday': ['TU']}
+    from scraper.pipelines import source_fingerprint
+    correction = _correction(
+        snapshot={**SNAPSHOT, 'status': 'captured', 'parsed': {'strategy': 'jsonld', 'events': [weekly], 'dropped': []}},
+        fingerprint=source_fingerprint(weekly, 'src-1'), changed=['recurrence_freq'])
+    [case_id] = _pull(monkeypatch, FakeBackend(corrections=[correction]))
+    [label] = Case.load(dirs[0] / case_id).events
+    assert label['recurrence_freq'] == 'none' and 'recurrence_byday' not in label
+
+
+def test_sync_waits_a_while_for_a_requested_page(dirs, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    waiting = _correction(snapshot={**SNAPSHOT, 'id': 'req-1', 'status': 'requested'},
+                          created_at=datetime.now(timezone.utc).isoformat())
+    backend = FakeBackend(corrections=[waiting], uncaptured={'req-1'})
+    assert _pull(monkeypatch, backend) == [] and backend.updates == []
+
+    monkeypatch.setattr(sync_module, 'fetch', lambda url: LISTING)
+    two_days_ago = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    backend = FakeBackend(corrections=[{**waiting, 'created_at': two_days_ago}],
+                          uncaptured={'req-1'})
+    [case_id] = _pull(monkeypatch, backend)
+    assert Case.load(dirs[0] / case_id).html == LISTING                  # the live page instead
+    assert backend.updates == [('correction', 'corr-777777', {'status': 'claimed'})]
 
 
 def test_sync_needs_backend_settings(monkeypatch):

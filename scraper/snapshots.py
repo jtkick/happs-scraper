@@ -11,6 +11,10 @@ A page is saved when the crawl had to guess or lose something on it:
 
 Uploads wait until the spider closes so they never hold up the crawl. The
 backend skips pages it already has and caps how many one source can add.
+
+Curators can also ask for a page (the backend's curation console does when
+none is saved since the scraper last read an event's page). The crawler pool
+fills those requests with fulfil_requests(), parsing the page as a crawl would.
 """
 from __future__ import annotations
 import base64
@@ -98,6 +102,52 @@ class SnapshotSampler:
             logger.info("Snapshots: %d queued, %d new in the backend", len(self.pending), kept)
         self.pending = []
         return kept
+
+
+def fulfil_requests(client, *, api_key: str = '', limit: int = 5, fetch=None) -> int:
+    """
+    Capture pages curators asked for: render each, parse it as a crawl would
+    (asking the model live when there's a key, and recording its answer), and
+    upload it against the request. A page that can't be fetched is given up
+    on with the reason. Returns how many were uploaded.
+    """
+    from scraper.eval.capture import FetchError, fetch as fetch_page, new_case
+    fetch = fetch or fetch_page
+    done = 0
+    for request in client.snapshots(status='requested')[:limit]:
+        ctx = request.get('context') or {}
+        give_up = lambda why: client.update_snapshot(  # noqa: E731
+            request['id'], {'status': 'discarded', 'reason': why[:255]})
+        try:
+            html = fetch(request['url'])
+        except FetchError as exc:
+            logger.warning("Requested page %s: %s", request['url'], exc)
+            give_up(f'could not fetch it: {exc}')
+            continue
+        if len(html.encode('utf-8')) > MAX_PAGE_BYTES:
+            give_up('the page is too large')
+            continue
+        try:
+            case = new_case(request['url'], html, kind=ctx.get('kind') or 'listing',
+                            seed_context=ctx.get('seed_context') or {}, partial=ctx.get('partial'),
+                            recipe=ctx.get('recipe') or {}, platform=ctx.get('platform'),
+                            ai='live' if api_key else None, api_key=api_key, case_id=request['id'])
+        except Exception as exc:
+            logger.exception("Parsing requested page %s failed", request['url'])
+            give_up(f'the scraper failed on it: {type(exc).__name__}')
+            continue
+        parsed = {k: case.parsed.get(k) for k in ('strategy', 'ai_used', 'events', 'dropped')}
+        response = client.upload_snapshot({
+            'request_id': request['id'], 'source_id': request.get('source'), 'url': request['url'],
+            'captured_at': case.captured_at, 'reason': request.get('reason') or '',
+            'html_gz': base64.b64encode(gzip.compress(html.encode('utf-8'))).decode(),
+            'parsed': parsed, 'ai_response': case.ai_response, 'context': ctx,
+        })
+        if response and response.get('id'):
+            done += 1
+    if done:
+        logger.info("Captured %d requested pages", done)
+    return done
 
 
 def _known_events_page(url: str, recipe: dict) -> bool:

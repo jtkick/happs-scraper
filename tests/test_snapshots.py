@@ -122,3 +122,57 @@ def test_ai_extractor_keeps_the_answer_on_the_response(monkeypatch):
 
 async def _drain(output):
     return [x async for x in output]
+
+
+# ── Pages curators asked for ──────────────────────────────────────────────────
+
+LISTING = f'''<html><head><script type="application/ld+json">[
+ {{"@type": "Event", "name": "Jazz Night", "startDate": "{_soon(7)}"}},
+ {{"@type": "Event", "name": "Pub Quiz", "startDate": "{_soon(8)}"}}
+]</script></head><body><p>What's on</p></body></html>'''
+
+REQUEST = {'id': 'req-1', 'source': 'src-1', 'url': 'https://venue.test/events', 'status': 'requested',
+           'reason': 'Requested by a curator',
+           'context': {'kind': 'listing', 'seed_context': {'timezone': 'America/New_York'}}}
+
+
+class RequestsClient(FakeClient):
+    def __init__(self, *requests):
+        super().__init__()
+        self.requests, self.updates = list(requests), []
+
+    def snapshots(self, status='pending'):
+        assert status == 'requested'
+        return self.requests
+
+    def update_snapshot(self, snapshot_id, data):
+        self.updates.append((snapshot_id, data))
+
+
+def test_requested_pages_are_captured_and_parsed_like_a_crawl():
+    from scraper.snapshots import fulfil_requests
+    client = RequestsClient(REQUEST)
+    assert fulfil_requests(client, fetch=lambda url: LISTING) == 1
+    [upload] = client.uploaded
+    assert (upload['request_id'], upload['source_id'], upload['url']) == ('req-1', 'src-1', REQUEST['url'])
+    assert gzip.decompress(base64.b64decode(upload['html_gz'])).decode() == LISTING
+    assert [e['title'] for e in upload['parsed']['events']] == ['Jazz Night', 'Pub Quiz']
+    assert upload['parsed']['strategy'] and upload['context'] == REQUEST['context']
+    json.dumps(upload)
+
+
+def test_requested_pages_that_cannot_be_captured_are_given_up_with_a_reason(monkeypatch):
+    from scraper.eval.capture import FetchError
+    from scraper.snapshots import fulfil_requests
+
+    def blocked(url):
+        raise FetchError('robots.txt disallows this URL')
+    client = RequestsClient(REQUEST, {**REQUEST, 'id': 'req-2'}, {**REQUEST, 'id': 'req-3'})
+    pages = iter([blocked, lambda url: 'x' * (5 * 1024 * 1024), lambda url: LISTING])
+    monkeypatch.setattr('scraper.eval.capture.new_case', lambda *a, **k: 1 / 0)
+    assert fulfil_requests(client, fetch=lambda url: next(pages)(url)) == 0
+    assert client.updates == [
+        ('req-1', {'status': 'discarded', 'reason': 'could not fetch it: robots.txt disallows this URL'}),
+        ('req-2', {'status': 'discarded', 'reason': 'the page is too large'}),
+        ('req-3', {'status': 'discarded', 'reason': 'the scraper failed on it: ZeroDivisionError'}),
+    ]

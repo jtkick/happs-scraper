@@ -289,31 +289,17 @@ class FingerprintDedupPipeline:
         return cls(crawler.spidercls.name)
 
     def process_item(self, item, spider=None):
-        from scraper.extractors.recurrence import signature
-        if item.get('recurrence_freq', 'none') != 'none':
-            fp = self._recurring_fingerprint(item, signature)
-        else:
-            fp = self._oneoff_fingerprint(item)
-        prefix = item.get('source_id') or self.name
-        item['fingerprint'] = f'{prefix}:{fp}'
+        item['fingerprint'] = source_fingerprint(item, item.get('source_id') or self.name)
         if item['fingerprint'] in self.seen:
             raise DropItem(f"duplicate_in_run: {item.get('title')}")
         self.seen.add(item['fingerprint'])
         return item
 
-    # ── Fingerprint helpers ───────────────────────────────────────────────────
 
-    def _oneoff_fingerprint(self, item: dict) -> str:
-        key = '|'.join([
-            fingerprint_text(item.get('title', '')),
-            self._date_only(item.get('start_datetime', '')),
-            fingerprint_text(
-                item.get('location_title', '') or item.get('location_address', '')
-            ),
-        ])
-        return hashlib.sha256(key.encode()).hexdigest()
-
-    def _recurring_fingerprint(self, item: dict, signature_fn) -> str:
+def source_fingerprint(item: dict, prefix: str) -> str:
+    """The id the backend keys an event by: `<prefix>:<hash>` (see FingerprintDedupPipeline)."""
+    from scraper.extractors.recurrence import signature
+    if item.get('recurrence_freq', 'none') != 'none':
         rec = {k: item.get(k) for k in (
             'recurrence_freq', 'recurrence_interval',
             'recurrence_byday', 'recurrence_month_mode',
@@ -323,13 +309,18 @@ class FingerprintDedupPipeline:
             fingerprint_text(
                 item.get('location_title', '') or item.get('location_address', '')
             ),
-            signature_fn(rec),
+            signature(rec),
         ])
-        return hashlib.sha256(key.encode()).hexdigest()
-
-    @staticmethod
-    def _date_only(dt_str: str) -> str:
-        return str(dt_str)[:10] if dt_str else ''
+    else:
+        start = item.get('start_datetime', '')
+        key = '|'.join([
+            fingerprint_text(item.get('title', '')),
+            str(start)[:10] if start else '',
+            fingerprint_text(
+                item.get('location_title', '') or item.get('location_address', '')
+            ),
+        ])
+    return f'{prefix}:{hashlib.sha256(key.encode()).hexdigest()}'
 
 
 # ── 300 · API submit ──────────────────────────────────────────────────────────

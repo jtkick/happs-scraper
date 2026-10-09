@@ -4,7 +4,7 @@ Crawler pool: keeps enough crawlers running for the sources that are due.
 
 Usage:
     python tools/worker.py [--max-crawlers 4] [--sources-per-crawler 20] [--batch 10]
-                           [--budget-minutes 30] [--poll-seconds 60]
+                           [--budget-minutes 30] [--poll-seconds 60] [--captures-per-tick 5]
 
 Every poll it asks the backend how many sources are due (nothing is leased)
 and starts crawlers — `scrapy crawl generic -a keep_claiming=1 …`, each
@@ -14,8 +14,12 @@ pool; they finish on their own. SIGTERM / SIGINT is passed on so each one
 finishes its in-flight pages and sends its reports. Several pools (machines)
 can run at once: the backend leases each source to one crawler.
 
+Each poll it also captures up to --captures-per-tick pages curators asked
+for (scraper/snapshots.py fulfil_requests), in this process, before scaling.
+
 Defaults come from WORKER_MAX_CRAWLERS, WORKER_SOURCES_PER_CRAWLER,
-WORKER_BATCH, WORKER_BUDGET_MINUTES and WORKER_POLL_SECONDS (see compose.yaml).
+WORKER_BATCH, WORKER_BUDGET_MINUTES, WORKER_POLL_SECONDS and
+WORKER_CAPTURES_PER_TICK (see compose.yaml).
 """
 from __future__ import annotations
 import argparse
@@ -43,15 +47,21 @@ def desired_crawlers(due: int, max_crawlers: int, per_crawler: int) -> int:
 class Pool:
 
     def __init__(self, client, spawn: Callable[[], subprocess.Popen], max_crawlers: int,
-                 per_crawler: int):
+                 per_crawler: int, capture: Callable[[], int] | None = None):
         self.client = client
         self.spawn = spawn
         self.max_crawlers = max_crawlers
         self.per_crawler = per_crawler
+        self.capture = capture
         self.crawlers: list = []
 
     def tick(self) -> None:
         self.crawlers = [c for c in self.crawlers if c.poll() is None]
+        if self.capture is not None:
+            try:
+                self.capture()
+            except Exception:
+                logger.exception("Capturing requested pages failed")
         due = self.client.due_count()
         if due is None:
             logger.warning("Backend unreachable; %d crawlers running", len(self.crawlers))
@@ -88,15 +98,20 @@ def main():
     parser.add_argument('--budget-minutes', type=float, default=float(env('WORKER_BUDGET_MINUTES', 30)))
     parser.add_argument('--poll-seconds', type=float, default=float(env('WORKER_POLL_SECONDS', 60)))
     parser.add_argument('--stop-timeout', type=float, default=float(env('WORKER_STOP_TIMEOUT', 100)))
+    parser.add_argument('--captures-per-tick', type=int, default=int(env('WORKER_CAPTURES_PER_TICK', 5)))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [worker] %(levelname)s: %(message)s')
 
     from scrapy.utils.project import get_project_settings
+    from scraper.snapshots import fulfil_requests
     from scraper.sources.client import BackendClient
-    client = BackendClient.from_settings(get_project_settings())
+    settings = get_project_settings()
+    client = BackendClient.from_settings(settings)
     command = crawler_command(args.batch, args.budget_minutes)
+    api_key = settings.get('ANTHROPIC_API_KEY', '')
     pool = Pool(client, lambda: subprocess.Popen(command, cwd=ROOT), args.max_crawlers,
-                args.sources_per_crawler)
+                args.sources_per_crawler,
+                capture=lambda: fulfil_requests(client, api_key=api_key, limit=args.captures_per_tick))
 
     stopping = []
     for sig in (signal.SIGTERM, signal.SIGINT):

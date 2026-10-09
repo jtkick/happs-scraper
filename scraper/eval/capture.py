@@ -56,7 +56,7 @@ def fetch(url: str, *, render: bool = True, user_agent: str = USER_AGENT) -> str
 
 def _render(url: str, user_agent: str) -> str:
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import Error as PlaywrightError, sync_playwright
     except ImportError as exc:
         raise FetchError('Playwright is not installed: pip install playwright && '
                          'playwright install chromium') from exc
@@ -66,6 +66,8 @@ def _render(url: str, user_agent: str) -> str:
             page = browser.new_page(user_agent=user_agent)
             page.goto(url, wait_until='networkidle', timeout=30_000)
             return page.content()
+        except PlaywrightError as exc:
+            raise FetchError(str(exc).splitlines()[0]) from exc
         finally:
             browser.close()
 
