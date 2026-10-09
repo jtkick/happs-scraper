@@ -13,6 +13,12 @@ extract_page(html, url, ...)  → PageResult
       → AI (only if still no title + start date)
     AI may itself return a list, which then replaces the single event.
 
+parse_page(response, kind, ...) → (PageResult, [event])
+parse_feed(adapter, response, ...) → [event] | None
+    One page start to finish, as the crawl parses it. The spider and the
+    test-case runner (scraper/eval/run.py) both call these, so the fixtures
+    test exactly what the crawl does.
+
 finalize(data, ...)  → dict | None
     Fill gaps from the listing partial and the ambient context, then run the
     unconditional passes: recurrence, explicit dates, tags. Ambient context
@@ -27,6 +33,7 @@ from typing import Callable, Optional
 
 from scraper import text as text_module
 from scraper.extractors import (
+    recipe as recipe_extractor,
     jsonld,
     opengraph,
     inline_json,
@@ -55,6 +62,39 @@ class PageResult:
     strategy: str = ''
     ai_used: bool = False
     ai_truncated: bool = False
+
+
+def parse_page(response, *, kind: str, recipe: Optional[dict] = None, context: Optional[dict] = None,
+               partial: Optional[dict] = None, ai: Optional[Callable] = None) -> tuple[PageResult, list[dict]]:
+    """
+    A listing (`kind='listing'`) adds the learned recipe's events to the waterfall.
+    A detail page takes `partial`, its listing entry, which fills its gaps; AI is
+    skipped when that entry already has a title and start.
+    """
+    recipe = recipe or {}
+    recipe_events = None
+    if kind == 'listing':
+        partial = None
+        if recipe.get('item_css'):
+            recipe_events = recipe_extractor.extract(response, recipe)
+    elif partial and sufficient(partial):
+        ai = None
+    result = extract_page(response.text, response.url, recipe_events=recipe_events, ai=ai)
+    return result, finalize_page(result, response.text, context=context, partial=partial)
+
+
+def parse_feed(adapter, response, *, context: Optional[dict] = None) -> Optional[list[dict]]:
+    """A platform feed's events, finalized; None when the adapter wants the page extracted generically."""
+    events = adapter.parse(response)
+    if events is None:
+        return None
+    finals = []
+    for data in events:
+        data.setdefault('extraction_method', f'platform:{adapter.name}')
+        final = finalize(data, context=context)
+        if final:
+            finals.append(final)
+    return finals
 
 
 def extract_page(

@@ -302,10 +302,8 @@ class GenericEventSpider(scrapy.Spider):
             if found:
                 return
 
-        recipe_events = recipe_extractor.extract(response, recipe) if recipe.get('item_css') else None
-        result = extraction.extract_page(
-            response.text, response.url,
-            recipe_events=recipe_events, ai=self._ai_extractor(response))
+        result, events = extraction.parse_page(response, kind='listing', recipe=recipe,
+                                               context=meta['context'], ai=self._ai_extractor(response))
         run.strategies[result.strategy] += len(result.events)
         if recipe.get('item_css') and result.strategy == 'ai':
             run.strategy_fallback = True
@@ -319,7 +317,6 @@ class GenericEventSpider(scrapy.Spider):
 
         found = link_classifier.classify(response, detail_css=recipe.get('detail_link_css'),
                                          pagination_css=recipe.get('pagination_css'))
-        events = extraction.finalize_page(result, response.text, context=meta['context'])
         self.page_parsed(response, result, events, kind='listing')
 
         yield from self._emit_listing_events(events, response, meta, run)
@@ -465,19 +462,13 @@ class GenericEventSpider(scrapy.Spider):
     def parse_platform(self, response):
         run = self._run(response)
         adapter = platforms.get(response.meta['platform'])
-        events = adapter.parse(response)
-        if events is None:           # adapter only locates the page; extract it generically
+        meta = self._carry(response)
+        finals = extraction.parse_feed(adapter, response, context=meta['context'])
+        if finals is None:           # adapter only locates the page; extract it generically
             yield from self.parse_listing(response)
             return
         run.listing_pages += 1
-        run.strategies[f'platform:{adapter.name}'] += len(events)
-        meta = self._carry(response)
-        finals = []
-        for data in events:
-            data.setdefault('extraction_method', f'platform:{adapter.name}')
-            final = extraction.finalize(data, context=meta['context'])
-            if final:
-                finals.append(final)
+        run.strategies[f'platform:{adapter.name}'] += len(finals)
         if self.snapshots:
             result = extraction.PageResult(single=False, strategy=f'platform:{adapter.name}')
             self.snapshots.consider(self, response, result, finals, kind='listing', platform=adapter.name)
@@ -495,24 +486,16 @@ class GenericEventSpider(scrapy.Spider):
         A detail page. meta['partial'] is this same event as its listing showed
         it; the page wins, the partial fills its gaps (scraper/extraction.py).
         """
+        result, events = extraction.parse_page(
+            response, kind='detail', context=response.meta.get('context', {}),
+            partial=response.meta.get('partial'), ai=self._ai_extractor(response))
         run = self._run(response)
         if run:
             run.detail_pages += 1
-        result = self.extract_page(response)
-        events = extraction.finalize_page(result, response.text, context=response.meta.get('context', {}),
-                                          partial=response.meta.get('partial'))
+            run.strategies[result.strategy or 'partial'] += max(1, len(result.events))
         self.page_parsed(response, result, events, kind='detail')
         for final in events:
             yield self.build_item(final, response)
-
-    def extract_page(self, response) -> extraction.PageResult:
-        partial = response.meta.get('partial') or {}
-        ai = None if extraction.sufficient(partial) else self._ai_extractor(response)
-        result = extraction.extract_page(response.text, response.url, ai=ai)
-        run = self._run(response)
-        if run:
-            run.strategies[result.strategy or 'partial'] += max(1, len(result.events))
-        return result
 
     def page_parsed(self, response, result, events, kind):
         if kind == 'detail':
@@ -556,16 +539,10 @@ class GenericEventSpider(scrapy.Spider):
         if not api_key:
             return None
         from scraper.extractors import ai
-        venue = (response.meta.get('context') or {}).get('location_title')
-
-        def respond(system, user, schema, label):
-            # Kept on the response so a page snapshot can carry the model's exact answer.
-            data = ai._call(api_key, system, user, schema, label)
-            response.meta['ai_response'] = {
-                'model': ai.MODEL, 'prompt_hash': ai.prompt_hash(user), 'response': data}
-            return data
-
-        return lambda html, url: ai.extract_many(html, url, api_key, venue=venue, respond=respond)
+        # The answer is kept on the response so a page snapshot can carry it.
+        record = lambda answer: response.meta.__setitem__('ai_response', answer)  # noqa: E731
+        return ai.extractor(api_key, venue=(response.meta.get('context') or {}).get('location_title'),
+                            respond=ai.recorder(api_key, record))
 
     # ── Requests & bookkeeping ────────────────────────────────────────────────
 

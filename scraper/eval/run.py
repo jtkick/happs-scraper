@@ -18,9 +18,9 @@ from scrapy.http import HtmlResponse
 from scraper import extraction, platforms
 from scraper.eval.case import Case
 from scraper.extractors import ai as ai_extractor
-from scraper.extractors import recipe as recipe_extractor
-from scraper.pipelines import dry_run
 from scraper.items import event_item
+from scraper.pipelines import dry_run
+
 
 
 @dataclass
@@ -52,28 +52,16 @@ def run_case(case: Case, ai: Optional[str] = 'replay', *, api_key: str = '',
 
 def _extract(case: Case, response, ai, result: RunResult) -> list[dict]:
     context = case.seed_context or {}
-    if case.platform:
-        adapter = platforms.get(case.platform)
-        events = adapter.parse(response) if adapter else None
+    adapter = platforms.get(case.platform)
+    if adapter:
+        events = extraction.parse_feed(adapter, response, context=context)
         if events is not None:
             result.strategy = f'platform:{adapter.name}'
-            finalized = []
-            for data in events:
-                data.setdefault('extraction_method', result.strategy)
-                final = extraction.finalize(data, context=context)
-                if final:
-                    finalized.append(final)
-            return finalized
-
-    recipe = case.recipe or {}
-    recipe_events = recipe_extractor.extract(response, recipe) if recipe.get('item_css') else None
-    partial = case.partial if case.kind == 'detail' else None
-    if partial and extraction.sufficient(partial):
-        ai = None
-    page = extraction.extract_page(case.html, case.url, recipe_events=recipe_events, ai=ai)
-    result.strategy = page.strategy
-    result.ai_used = page.ai_used
-    return extraction.finalize_page(page, case.html, context=context, partial=partial)
+            return events
+    page, events = extraction.parse_page(response, kind=case.kind, recipe=case.recipe, context=context,
+                                         partial=case.partial, ai=ai)
+    result.strategy, result.ai_used = page.strategy, page.ai_used
+    return events
 
 
 def _ai_callable(case: Case, mode: Optional[str], api_key: str, model: Optional[str],
@@ -83,22 +71,19 @@ def _ai_callable(case: Case, mode: Optional[str], api_key: str, model: Optional[
     if mode not in ('replay', 'live'):
         raise ValueError(f'unknown AI mode {mode!r}')
 
-    def respond(system, user, schema, label):
-        if mode == 'live':
-            used = model or ai_extractor.MODEL
-            data = ai_extractor._call(api_key, system, user, schema, label, model=used)
-            result.ai_response = {'model': used, 'prompt_hash': ai_extractor.prompt_hash(user),
-                                  'response': data}
-            return data
-        recorded = case.ai_response
-        if not recorded or recorded.get('response') is None:
-            result.ai_missing = True
-            return None
-        if recorded.get('prompt_hash') != ai_extractor.prompt_hash(user):
-            result.ai_stale = True
-        return recorded['response']
+    if mode == 'live':
+        record = lambda answer: setattr(result, 'ai_response', answer)  # noqa: E731
+        respond = ai_extractor.recorder(api_key, record, model)
+    else:
+        def respond(system, user, schema, label):
+            recorded = case.ai_response
+            if not recorded or recorded.get('response') is None:
+                result.ai_missing = True
+                return None
+            if recorded.get('prompt_hash') != ai_extractor.prompt_hash(user):
+                result.ai_stale = True
+            return recorded['response']
 
     venue = (case.seed_context or {}).get('location_title')
     today = case.captured.date()
-    return lambda html, url: ai_extractor.extract_many(
-        html, url, api_key, venue=venue, today=today, respond=respond)
+    return ai_extractor.extractor(api_key, venue=venue, today=today, respond=respond)

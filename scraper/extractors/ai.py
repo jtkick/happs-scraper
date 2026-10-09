@@ -105,7 +105,7 @@ class AIResult:
 
 def build_user_message(text: str, *, url: str = '', venue: Optional[str] = None,
                        today: Optional[date] = None) -> str:
-    """The exact user turn sent to the model (tools/export_finetune.py reuses it)."""
+    """The exact user turn sent to the model (scraper/eval/dataset.py reuses it)."""
     header = [f'Today: {(today or date.today()).isoformat()}', f'Page URL: {url}']
     if venue:
         header.append(f'Venue (if the page does not name another): {venue}')
@@ -149,6 +149,23 @@ def extract_many(html: str, base_url: str, api_key: str, *,
             clean['drop_reason'] = 'ai_unverified'
         events.append(clean)
     return AIResult(events=events, truncated=truncated)
+
+
+def extractor(api_key: str, *, venue: Optional[str] = None, today: Optional[date] = None,
+              respond: Optional[Callable] = None) -> Callable:
+    """The `ai` callable scraper/extraction.py takes: (html, url) → AIResult."""
+    return lambda html, url: extract_many(html, url, api_key, venue=venue, today=today, respond=respond)
+
+
+def recorder(api_key: str, record: Callable[[dict], None], model: Optional[str] = None) -> Callable:
+    """A `respond` that calls the model and hands `record` its exact answer (for snapshots and test cases)."""
+    used = model or MODEL
+
+    def respond(system, user, schema, label):
+        data = _call(api_key, system, user, schema, label, model=used)
+        record({'model': used, 'prompt_hash': prompt_hash(user), 'response': data})
+        return data
+    return respond
 
 
 def extract(html: str, base_url: str, api_key: str) -> Optional[dict]:

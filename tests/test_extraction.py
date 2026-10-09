@@ -71,6 +71,51 @@ def test_structured_data_beats_recipe_and_ai():
     assert result.strategy == 'jsonld' and ai.calls == []
 
 
+# ── parse_page / parse_feed: one page as the crawl parses it ──────────────────
+
+CARDS = ('<html><body><div class="card"><h3>Card A</h3><time>June 1, 2026</time></div>'
+         '<div class="card"><h3>Card B</h3><time>June 2, 2026</time></div></body></html>')
+CARD_RECIPE = {'item_css': 'div.card', 'fields': {'title': 'h3::text', 'date': 'time::text'}}
+
+
+def page_response(html, url=URL):
+    from scrapy.http import HtmlResponse
+    return HtmlResponse(url, body=html.encode(), encoding='utf-8')
+
+
+def test_listing_uses_the_recipe():
+    result, events = extraction.parse_page(page_response(CARDS), kind='listing', recipe=CARD_RECIPE)
+    assert result.strategy == 'recipe' and [e['title'] for e in events] == ['Card A', 'Card B']
+
+
+def test_detail_page_ignores_the_listing_recipe():
+    result, _ = extraction.parse_page(page_response(CARDS), kind='detail', recipe=CARD_RECIPE)
+    assert result.strategy != 'recipe'
+
+
+def test_detail_partial_fills_gaps_and_spares_the_ai():
+    ai = fake_ai({'title': 'X', 'start_datetime': '2026-01-01'})
+    partial = {'title': 'Card A', 'start_datetime': '2026-06-01T20:00'}
+    _, [event] = extraction.parse_page(page_response('<html></html>'), kind='detail', partial=partial, ai=ai)
+    assert event['title'] == 'Card A' and ai.calls == []
+
+
+def test_listing_never_takes_a_partial():
+    partial = {'title': 'Somebody else'}
+    _, events = extraction.parse_page(page_response('<html></html>'), kind='listing', partial=partial)
+    assert events == []
+
+
+def test_feed_events_are_finalized_with_their_platform():
+    class Feed:
+        name = 'feed'
+
+        def parse(self, response):
+            return [{'title': 'Quiz', 'start_datetime': '2026-06-01T20:00'}, {'start_datetime': 'x'}]
+    [event] = extraction.parse_feed(Feed(), page_response(''), context={'location_title': 'Hall'})
+    assert event['extraction_method'] == 'platform:feed' and event['location_title'] == 'Hall'
+
+
 # ── Single-event pages and AI ─────────────────────────────────────────────────
 
 def test_single_event_page_does_not_call_ai():
