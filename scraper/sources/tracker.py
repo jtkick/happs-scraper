@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from scraper.discovery.sitemap import SitemapRead
 from scraper.page_state import PageState
 
 logger = logging.getLogger(__name__)
@@ -63,11 +64,8 @@ class SourceRun:
     pages: PageState = field(default_factory=PageState)
     # sitemap key (scraper/discovery/sitemap.py) → lastmod, for the pages the source's sitemaps list
     lastmod: dict = field(default_factory=dict)
-    # Requests held back until the sitemaps are read, and the sitemap fetches still out.
-    waiting: list = field(default_factory=list)
-    lastmod_pending: int = 0
-    sitemap_children: int = 0
-    sitemap_roots: list = field(default_factory=list)
+    # the sitemaps being read, while they are
+    sitemaps: Optional[SitemapRead] = None
 
     @property
     def source_id(self) -> Optional[str]:

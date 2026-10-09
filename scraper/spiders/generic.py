@@ -14,7 +14,7 @@ item_css, detail_link_css, pagination_css), not a spider of its own.
 Per source:
   1. Saved recipe? → go straight to its platform feed or events pages.
      Otherwise discover: platform detection → scored homepage links →
-     sitemap.xml → Claude picks from the homepage links → the homepage itself.
+     the sitemaps (robots.txt, indexes) → Claude picks from the homepage links → the homepage itself.
   2. Listing pages: extract every event (scraper/extraction.py). Follow an
      event's detail page when the listing lacks its date or description
      ("required"), or when the page probably says more ("soft": a cut-off
@@ -179,50 +179,39 @@ class GenericEventSpider(scrapy.Spider):
             yield from self._follow_listings(urls, meta, run, origin='heuristic')
             return
 
-        meta['home_links'] = [(text, url) for text, url, _ in page_links(response)]
-        meta['home_url'] = response.url
-        yield scrapy.Request(response.urljoin('/sitemap.xml'), callback=self.parse_sitemap,
-                             errback=self._sitemap_failed, meta={**meta, 'stage': 'sitemap'})
+        run.sitemaps = sitemap.SitemapRead(
+            purpose='discover', max_children=sitemap.DISCOVERY_CHILDREN, home_url=response.url,
+            home_links=[(text, url) for text, url, _ in page_links(response)])
+        yield from self._read_sitemaps(run, meta, response.url)
 
-    def parse_sitemap(self, response):
-        run = self._run(response)
-        locs = response.xpath('//*[local-name()="loc"]/text()').getall()
-        urls = [u for u in events_urls_from_sitemap(locs) if same_site(u, response.url)]
+    def _discovered(self, read: sitemap.SitemapRead, meta, run: SourceRun):
+        """The sitemaps are in: events pages among their URLs, else Claude's pick, else the homepage."""
+        urls = [u for u in events_urls_from_sitemap(read.locs) if same_site(u, read.home_url)]
         if urls:
-            yield from self._follow_listings(urls, self._carry(response), run, origin='heuristic')
-        else:
-            yield from self._ai_or_homepage(response.meta, run)
-
-    def _sitemap_failed(self, failure):
-        request = failure.request
-        yield from self._ai_or_homepage(request.meta, self.tracker.for_request(request))
-
-    def _ai_or_homepage(self, raw_meta: dict, run: SourceRun):
-        home_links = raw_meta.get('home_links', [])
-        home = raw_meta.get('home_url') or run.source['homepage_url']
-        meta = {k: raw_meta[k] for k in self._CARRIED if k in raw_meta and not k.startswith('home_')}
+            yield from self._follow_listings(urls, meta, run, origin='heuristic')
+            return
         api_key = self.settings.get('ANTHROPIC_API_KEY', '')
-        if api_key and home_links:
+        if api_key and read.home_links:
             from scraper.extractors import ai
-            urls = ai.pick_events_links(home_links, home, api_key)
+            urls = ai.pick_events_links(read.home_links, read.home_url, api_key)
             if urls:
                 yield from self._follow_listings(urls, meta, run, origin='ai')
                 return
         # Many small sites list events on the homepage itself.
-        yield from self._follow_listings([home], meta, run, origin='heuristic', dont_filter=True)
+        yield from self._follow_listings([read.home_url], meta, run, origin='heuristic', dont_filter=True)
 
     def _follow_listings(self, urls, meta, run, origin, dont_filter=False):
         self.tracker.learn(run, origin, events_urls=list(urls))
         for url in urls:
             yield self._listing_request(url, meta, run, dont_filter=dont_filter)
 
-    # ── Sitemap lastmod ───────────────────────────────────────────────────────
+    # ── Sitemaps ──────────────────────────────────────────────────────────────
 
     def _after_lastmod(self, requests, meta, run, source):
         """
-        Fetch the source's sitemaps (raw) for when each page last changed, then
-        send `requests`, so skip decisions can use them. Straight away when
-        there are no stored detail pages to skip, no sitemap, or it lied before.
+        Read the source's sitemaps for when each page last changed, then send
+        `requests`, so skip decisions can use them. Straight away when there
+        are no stored detail pages to skip, no sitemap, or it lied before.
         """
         recipe = meta['recipe']
         wanted = (any(p.get('kind') == 'detail' for p in run.pages.pages.values())
@@ -230,59 +219,63 @@ class GenericEventSpider(scrapy.Spider):
         if not wanted:
             yield from requests
             return
-        run.waiting = list(requests)
-        roots = recipe.get('sitemap_urls')
+        run.sitemaps = sitemap.SitemapRead(purpose='lastmod', waiting=list(requests))
+        yield from self._read_sitemaps(run, meta, source['homepage_url'])
+
+    def _read_sitemaps(self, run, meta, base_url):
+        """
+        Fetch run.sitemaps raw: the recipe's sitemap_urls, else those robots.txt
+        names, else /sitemap.xml. _sitemaps_read carries on once the last is in.
+        """
+        roots = meta['recipe'].get('sitemap_urls')
         if roots is None:
-            yield self._lastmod_request(urljoin(source['homepage_url'], '/robots.txt'), meta, run,
+            yield self._sitemap_request(urljoin(base_url, '/robots.txt'), meta, run,
                                         self.parse_robots_sitemaps, robots=True)
-        else:
-            for url in roots[:sitemap.MAX_ROOTS]:
-                yield self._lastmod_request(url, meta, run, self.parse_lastmod, root=True)
+        elif not roots:
+            yield from self._sitemaps_read(run, meta)
+        for url in (roots or [])[:sitemap.MAX_ROOTS]:
+            yield self._sitemap_request(url, meta, run, self.parse_sitemap, root=True)
 
     def parse_robots_sitemaps(self, response):
         run, meta = self._run(response), self._carry(response)
         for url in sitemap.roots(response.body, response.url):
-            yield self._lastmod_request(url, meta, run, self.parse_lastmod, root=True)
-        yield from self._lastmod_done(run, meta)
+            yield self._sitemap_request(url, meta, run, self.parse_sitemap, root=True)
+        yield from self._sitemap_done(run, meta)
 
-    def parse_lastmod(self, response):
+    def parse_sitemap(self, response):
         run, meta = self._run(response), self._carry(response)
         kind, entries = sitemap.parse(response.body)
-        if kind == 'sitemapindex':
-            room = max(0, sitemap.MAX_CHILDREN - run.sitemap_children)
-            children = sitemap.pick_children([loc for loc, _ in entries], limit=room)
-            run.sitemap_children += len(children)
-            for url in children:
-                yield self._lastmod_request(url, meta, run, self.parse_lastmod)
-        elif kind == 'urlset':
-            for loc, lastmod in entries:
-                if lastmod and len(run.lastmod) < sitemap.MAX_URLS:
-                    run.lastmod[sitemap.key(loc)] = lastmod
-        if kind and response.meta.get('root'):
-            run.sitemap_roots.append(response.request.url)
-        yield from self._lastmod_done(run, meta)
+        for url in run.sitemaps.add(response.request.url, kind, entries, root=response.meta.get('root')):
+            yield self._sitemap_request(url, meta, run, self.parse_sitemap)
+        yield from self._sitemap_done(run, meta)
 
-    def _lastmod_failed(self, failure):
+    def _sitemap_failed(self, failure):
         request = failure.request
         run, meta = self.tracker.for_request(request), self._carry(request)
         if request.meta.get('robots'):
-            yield self._lastmod_request(urljoin(request.url, '/sitemap.xml'), meta, run,
-                                        self.parse_lastmod, root=True)
-        yield from self._lastmod_done(run, meta)
+            yield self._sitemap_request(urljoin(request.url, '/sitemap.xml'), meta, run,
+                                        self.parse_sitemap, root=True)
+        yield from self._sitemap_done(run, meta)
 
-    def _lastmod_request(self, url, meta, run, callback, **extra):
-        run.lastmod_pending += 1
-        return scrapy.Request(url, callback=callback, errback=self._lastmod_failed, dont_filter=True,
-                              meta={**meta, 'stage': 'lastmod', **extra})
+    def _sitemap_request(self, url, meta, run, callback, **extra):
+        run.sitemaps.pending += 1
+        return scrapy.Request(url, callback=callback, errback=self._sitemap_failed, dont_filter=True,
+                              meta={**meta, 'stage': 'sitemap', **extra})
 
-    def _lastmod_done(self, run, meta):
-        run.lastmod_pending -= 1
-        if run.lastmod_pending:
-            return
+    def _sitemap_done(self, run, meta):
+        run.sitemaps.pending -= 1
+        if not run.sitemaps.pending:
+            yield from self._sitemaps_read(run, meta)
+
+    def _sitemaps_read(self, run, meta):
+        read, run.sitemaps = run.sitemaps, None
         if meta['recipe'].get('sitemap_urls') is None:
-            self.tracker.learn(run, 'heuristic', sitemap_urls=list(dict.fromkeys(run.sitemap_roots)))
-        waiting, run.waiting = run.waiting, []
-        yield from waiting
+            self.tracker.learn(run, 'heuristic', sitemap_urls=list(dict.fromkeys(read.roots)))
+        run.lastmod = read.lastmod
+        if read.purpose == 'discover':
+            yield from self._discovered(read, meta, run)
+        else:
+            yield from read.waiting
 
     # ── Listings ──────────────────────────────────────────────────────────────
 
@@ -591,7 +584,7 @@ class GenericEventSpider(scrapy.Spider):
             item = self.build_item(partial, request)
             yield item
 
-    _CARRIED = ('run_key', 'source_id', 'context', 'recipe', 'home_links', 'home_url')
+    _CARRIED = ('run_key', 'source_id', 'context', 'recipe')
 
     def _carry(self, response) -> dict:
         return {k: response.meta[k] for k in self._CARRIED if k in response.meta}

@@ -1,17 +1,19 @@
 """
-Sitemap lastmod: when each of a site's pages last changed, by its own account.
+Reading a site's sitemaps: which pages it has, and when each last changed.
 
 roots(robots_body, base_url) → the sitemaps robots.txt names, else /sitemap.xml
 parse(body)                  → ('urlset' | 'sitemapindex' | '', [(loc, lastmod or None)])
 pick_children(locs)          → which child sitemaps of an index to fetch (event-looking first)
 key(url)                     → the form URLs are compared in (sitemaps and listings spell them differently)
+SitemapRead                  → one source's sitemaps being read (the spider fetches, this keeps count)
 
-Used only to decide whether a detail page changed since it was last fetched
-(scraper/page_state.py); discovery of events pages lives in events_page.py.
+Read to discover a new site's events pages (events_page.events_urls_from_sitemap)
+and, on later crawls, to decide whether a detail page changed (scraper/page_state.py).
 """
 from __future__ import annotations
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urljoin
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 MAX_ROOTS = 5
 MAX_CHILDREN = 20
+DISCOVERY_CHILDREN = 5
 MAX_URLS = 50_000
 MAX_BYTES = 50 * 1024 * 1024        # the sitemap protocol's own limit, uncompressed
 
@@ -66,3 +69,37 @@ def pick_children(locs: list[str], limit: int = MAX_CHILDREN) -> list[str]:
 
 def key(url: str) -> str:
     return canonicalize_url(url).rstrip('/')
+
+
+@dataclass
+class SitemapRead:
+    """
+    One source's sitemaps being read. `purpose` 'discover' keeps every page URL
+    listed (locs) to find events pages in; 'lastmod' holds back `waiting`
+    listing requests until the dates are in. Both learn which roots exist.
+    """
+    purpose: str
+    max_children: int = MAX_CHILDREN
+    waiting: list = field(default_factory=list)
+    home_url: str = ''
+    home_links: list = field(default_factory=list)
+    pending: int = 0
+    children: int = 0
+    roots: list = field(default_factory=list)
+    lastmod: dict = field(default_factory=dict)
+    locs: list = field(default_factory=list)
+
+    def add(self, url: str, kind: str, entries: list, *, root: bool = False) -> list[str]:
+        """Take in one fetched sitemap; returns the child sitemaps to fetch next."""
+        if kind and root:
+            self.roots.append(url)
+        if kind == 'sitemapindex':
+            children = pick_children([loc for loc, _ in entries], limit=max(0, self.max_children - self.children))
+            self.children += len(children)
+            return children
+        for loc, lastmod in entries if kind == 'urlset' else ():
+            if self.purpose == 'discover' and len(self.locs) < MAX_URLS:
+                self.locs.append(loc)
+            if lastmod and len(self.lastmod) < MAX_URLS:
+                self.lastmod[key(loc)] = lastmod
+        return []

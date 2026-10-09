@@ -1,4 +1,4 @@
-"""Tests for scraper/discovery/sitemap.py — reading sitemaps for lastmod."""
+"""Tests for scraper/discovery/sitemap.py — reading sitemaps for discovery and lastmod."""
 import gzip
 from datetime import datetime, timezone
 
@@ -55,3 +55,21 @@ def test_roots_come_from_robots_or_default():
 def test_keys_match_across_spellings():
     assert sitemap.key('https://x.test/event/2026-biennial%3a-the-long-view/19581/') == \
         sitemap.key('https://x.test/event/2026-biennial%3A-the-long-view/19581')
+
+
+def test_read_follows_index_children_up_to_its_cap():
+    read = sitemap.SitemapRead(purpose='discover', max_children=2)
+    entries = [(f'https://v.test/s{i}.xml', None) for i in range(3)]
+    assert len(read.add('https://v.test/sitemap.xml', 'sitemapindex', entries, root=True)) == 2
+    assert read.add('https://v.test/other.xml', 'sitemapindex', entries) == []
+    assert read.roots == ['https://v.test/sitemap.xml']
+
+
+def test_read_keeps_page_urls_only_to_discover():
+    when = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    entries = [('https://v.test/events/', when), ('https://v.test/about', None)]
+    discover, lastmod = sitemap.SitemapRead(purpose='discover'), sitemap.SitemapRead(purpose='lastmod')
+    for read in (discover, lastmod):
+        read.add('https://v.test/sitemap.xml', 'urlset', entries)
+    assert discover.locs == ['https://v.test/events/', 'https://v.test/about'] and lastmod.locs == []
+    assert lastmod.lastmod == {'https://v.test/events': when}

@@ -96,22 +96,44 @@ def test_homepage_link_discovery(spider):
     assert run.learned == {'events_urls': ['https://venue.test/events']}
 
 
-def test_no_links_falls_back_to_sitemap_then_homepage(spider):
+def _home_sitemap(spider, home_body=''):
+    """Discovery with no events link on the homepage: robots.txt names no sitemap, so /sitemap.xml."""
     [home] = spider.entry_requests(source(status='new'))
-    _, [sitemap] = split(spider.parse_home(respond(home, html('<a href="/about">About</a>'))))
-    assert sitemap.url == 'https://venue.test/sitemap.xml'
-    empty = respond(sitemap, '<urlset><url><loc>https://venue.test/about</loc></url></urlset>',
-                    cls=TextResponse)
-    _, [again] = split(spider.parse_sitemap(empty))
+    _, [robots] = split(spider.parse_home(respond(home, html(home_body))))
+    assert robots.url == 'https://venue.test/robots.txt'
+    _, [root] = split(spider.parse_robots_sitemaps(respond(robots, '', cls=TextResponse)))
+    assert root.url == 'https://venue.test/sitemap.xml'
+    return root
+
+
+def urlset(*locs):
+    return ('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + ''.join(f'<url><loc>{loc}</loc></url>' for loc in locs) + '</urlset>')
+
+
+def test_no_links_falls_back_to_sitemap_then_homepage(spider):
+    root = _home_sitemap(spider, '<a href="/about">About</a>')
+    _, [again] = split(spider.parse_sitemap(respond(root, urlset('https://venue.test/about'), cls=TextResponse)))
     assert again.url == HOME and again.callback == spider.parse_listing and again.dont_filter
 
 
 def test_sitemap_listing_is_followed(spider):
-    [home] = spider.entry_requests(source(status='new'))
-    _, [sitemap] = split(spider.parse_home(respond(home, html(''))))
-    body = '<urlset><url><loc>https://venue.test/calendar</loc></url></urlset>'
-    _, [listing] = split(spider.parse_sitemap(respond(sitemap, body, cls=TextResponse)))
+    root = _home_sitemap(spider)
+    _, [listing] = split(spider.parse_sitemap(respond(root, urlset('https://venue.test/calendar'),
+                                                      cls=TextResponse)))
     assert listing.url == 'https://venue.test/calendar'
+    assert spider.tracker.for_request(listing).learned['sitemap_urls'] == ['https://venue.test/sitemap.xml']
+
+
+def test_discovery_follows_a_sitemap_index(spider):
+    root = _home_sitemap(spider)
+    index = ('<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+             '<sitemap><loc>https://venue.test/page-sitemap.xml</loc></sitemap></sitemapindex>')
+    _, [child] = split(spider.parse_sitemap(respond(root, index, cls=TextResponse)))
+    assert child.url == 'https://venue.test/page-sitemap.xml'
+    _, [listing] = split(spider.parse_sitemap(respond(child, urlset('https://venue.test/whats-on'),
+                                                      cls=TextResponse)))
+    assert listing.url == 'https://venue.test/whats-on'
 
 
 def test_platform_on_homepage_takes_over(spider):
@@ -156,8 +178,8 @@ def test_html_pages_are_rendered_and_feeds_are_not():
     spider = make_spider(PLAYWRIGHT_ENABLED=True)
     [home] = spider.entry_requests(source(status='new'))
     assert home.meta['playwright'] is True
-    _, [sitemap] = split(spider.parse_home(respond(home, html(''))))
-    assert not sitemap.meta.get('playwright')
+    _, [robots] = split(spider.parse_home(respond(home, html(''))))
+    assert not robots.meta.get('playwright')
     [listing] = spider.entry_requests(source(effective_recipe={'events_urls': ['https://venue.test/events']}))
     assert listing.meta['playwright'] is True
     recipe = {'platform': 'ical', 'platform_urls': ['https://venue.test/cal.ics']}
@@ -458,7 +480,7 @@ def test_sitemap_lastmod_is_read_before_listings_and_learned():
                                                          cls=TextResponse)))
     body = (f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{JAZZ}/</loc>'
             f'<lastmod>{datetime.now(timezone.utc).isoformat()}</lastmod></url></urlset>')
-    _, [listing] = split(spider.parse_lastmod(respond(sm, body, cls=TextResponse)))
+    _, [listing] = split(spider.parse_sitemap(respond(sm, body, cls=TextResponse)))
     assert listing.url == EVENTS
     run = spider.tracker.for_request(listing)
     assert run.learned['sitemap_urls'] == ['https://venue.test/sm.xml']
@@ -470,9 +492,9 @@ def test_missing_sitemap_is_learned_as_none():
     spider = make_spider()
     spider.client = FakeClient([jazz_record()])
     [robots] = spider.entry_requests(source(effective_recipe={'events_urls': [EVENTS]}))
-    [fallback] = list(spider._lastmod_failed(_failure(robots)))
+    [fallback] = list(spider._sitemap_failed(_failure(robots)))
     assert fallback.url == 'https://venue.test/sitemap.xml'
-    [listing] = list(spider._lastmod_failed(_failure(fallback)))
+    [listing] = list(spider._sitemap_failed(_failure(fallback)))
     assert listing.url == EVENTS
     assert spider.tracker.for_request(listing).learned['sitemap_urls'] == []
 
