@@ -20,7 +20,7 @@ from scraper.eval.case import Case
 from scraper.extractors import ai as ai_extractor
 from scraper.extractors import recipe as recipe_extractor
 from scraper.pipelines import dry_run
-from scraper.spiders.base import BaseEventSpider
+from scraper.items import event_item
 
 
 @dataclass
@@ -45,9 +45,8 @@ def run_case(case: Case, ai: Optional[str] = 'replay', *, api_key: str = '',
     with time_machine.travel(case.captured, tick=False):
         response = HtmlResponse(url=case.url, body=case.html.encode('utf-8'), encoding='utf-8')
         finalized = _extract(case, response, _ai_callable(case, ai, api_key, model, result), result)
-        spider = BaseEventSpider(name='eval')
         result.events, result.dropped = dry_run(
-            [spider.build_item(data, response) for data in finalized], spider)
+            [event_item(data, source_url=case.url) for data in finalized], None)
     return result
 
 

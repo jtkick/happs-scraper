@@ -536,3 +536,149 @@ def test_idle_spider_stops_claiming_after_its_budget():
 
 def test_idle_spider_without_keep_claiming_closes(spider):
     spider._on_idle()
+
+
+# ── Detail pages: the extraction waterfall and context ────────────────────────
+
+from scrapy.http import Request  # noqa: E402
+
+
+def response(html: str, url: str = 'https://x.test/e', context: dict | None = None):
+    request = Request(url, meta={'context': context} if context is not None else {})
+    return HtmlResponse(url, body=html.encode(), encoding='utf-8', request=request)
+
+
+def jsonld_page(body: str) -> str:
+    return f'<html><head><script type="application/ld+json">{body}</script></head><body></body></html>'
+
+
+EVENT_PAGE = jsonld_page('''{
+  "@type": "Event", "name": "Trivia Night",
+  "startDate": "2026-06-04T19:00:00-04:00",
+  "description": "Pub quiz with prizes."
+}''')
+
+
+def one_item(spider, resp):
+    items = list(spider.parse_event(resp))
+    assert len(items) == 1, f'expected exactly one item, got {len(items)}'
+    return items[0]
+
+
+def test_jsonld_is_used_first(spider):
+    item = one_item(spider, response(EVENT_PAGE))
+    assert item['title'] == 'Trivia Night'
+    assert item['extraction_method'] == 'jsonld'
+
+
+def test_opengraph_used_when_jsonld_absent(spider):
+    html = ('<html><head>'
+            '<meta property="og:title" content="Comedy Showcase"/>'
+            '<meta property="og:start_time" content="2026-08-01T20:00:00-04:00"/>'
+            '</head></html>')
+    item = one_item(spider, response(html))
+    assert item['title'] == 'Comedy Showcase'
+    assert item['extraction_method'] == 'opengraph'
+
+
+def test_jsonld_beats_opengraph_on_the_same_page(spider):
+    html = EVENT_PAGE.replace(
+        '<body>', '<body><meta property="og:title" content="Wrong Title"/>')
+    assert one_item(spider, response(html))['title'] == 'Trivia Night'
+
+
+def test_inline_json_supplements_structured_data(spider):
+    """inline_json always runs, so it can fill fields JSON-LD left blank."""
+    html = EVENT_PAGE.replace('</head>', '''<script type="application/json">
+      {"name": "Trivia Night", "startDate": "2026-06-04T19:00:00-04:00",
+       "venue": "The Rusty Tap", "address": "1 Main St", "price": 5}
+      </script></head>''')
+    item = one_item(spider, response(html))
+    assert item['location_title'] == 'The Rusty Tap'
+    assert item['ticket_price'] == 5.0
+
+
+def test_longer_description_from_inline_json_wins(spider):
+    html = EVENT_PAGE.replace('</head>', '''<script type="application/json">
+      {"name": "Trivia Night", "startDate": "2026-06-04T19:00:00-04:00",
+       "venue": "The Rusty Tap", "description": "Pub quiz with prizes, and a cash bar all night."}
+      </script></head>''')
+    assert one_item(spider, response(html))['description'].endswith('cash bar all night.')
+
+
+def test_page_without_a_title_yields_nothing(spider):
+    assert list(spider.parse_event(response('<html><body>nothing here</body></html>'))) == []
+
+
+# ── Inherited context ─────────────────────────────────────────────────────────
+
+def test_context_fills_gaps(spider):
+    ctx = {'location_title': 'The Rusty Tap', 'location_lat': 39.0, 'location_lon': -76.6}
+    item = one_item(spider, response(EVENT_PAGE, context=ctx))
+    assert item['location_title'] == 'The Rusty Tap'
+    assert (item['location_lat'], item['location_lon']) == (39.0, -76.6)
+
+
+def test_page_data_outranks_context(spider):
+    html = jsonld_page('''{"@type": "Event", "name": "Trivia Night",
+      "startDate": "2026-06-04T19:00:00-04:00",
+      "location": {"@type": "Place", "name": "Back Room"}}''')
+    item = one_item(spider, response(html, context={'location_title': 'The Rusty Tap'}))
+    assert item['location_title'] == 'Back Room'
+
+
+def test_context_never_supplies_a_title(spider):
+    """A venue-level title would label every event on the site identically."""
+    resp = response('<html><body>nothing</body></html>', context={'title': 'The Rusty Tap'})
+    assert list(spider.parse_event(resp)) == []
+
+
+def test_missing_context_key_is_harmless(spider):
+    assert one_item(spider, response(EVENT_PAGE))['location_title'] is None
+
+
+# ── Unconditional passes ──────────────────────────────────────────────────────
+
+def test_recurrence_is_extracted_from_description(spider):
+    html = jsonld_page('''{"@type": "Event", "name": "Trivia Night",
+      "startDate": "2026-06-04T19:00:00-04:00",
+      "description": "Every Thursday. Pub quiz with prizes."}''')
+    item = one_item(spider, response(html))
+    assert item['recurrence_freq'] == 'weekly'
+    assert item['recurrence_byday'] == ['TH']
+
+
+def test_tags_matched_from_text(spider):
+    assert 'Trivia' in one_item(spider, response(EVENT_PAGE))['tag_names']
+
+
+def test_tags_inferred_from_venue_context(spider):
+    item = one_item(spider, response(EVENT_PAGE, context={'venue_type': 'pub'}))
+    assert '21+' in item['tag_names']
+
+
+def test_schedule_text_is_not_emitted_on_the_item(spider):
+    """_schedule_text is an internal hint and must not reach the API payload."""
+    html = jsonld_page('''{"@type": "Event", "name": "Gig",
+      "startDate": "2026-06-04T19:00:00-04:00"}''').replace(
+        '</head>', '''<script type="application/json">
+        {"name": "Gig", "startDate": "2026-06-04T19:00:00-04:00", "venue": "Hall",
+         "address": "1 Main St", "times": "June 5: 6 to 10 p.m.; June 6: noon to 10 p.m."}
+        </script></head>''')
+    assert '_schedule_text' not in dict(one_item(spider, response(html)))
+
+
+def test_listing_page_yields_one_item_per_event(spider):
+    html = jsonld_page('''[{"@type": "Event", "name": "Show A", "startDate": "2026-06-01T20:00"},
+                          {"@type": "Event", "name": "Show B", "startDate": "2026-06-02T20:00"}]''')
+    items = list(spider.parse_event(response(html, context={'location_title': 'Hall'})))
+    assert [i['title'] for i in items] == ['Show A', 'Show B']
+    assert all(i['location_title'] == 'Hall' for i in items)
+
+
+def test_listing_partial_survives_an_empty_detail_page(spider):
+    partial = {'title': 'Show A', 'start_datetime': '2026-06-01T20:00'}
+    request = Request('https://x.test/e/a', meta={'context': {}, 'partial': partial})
+    resp = HtmlResponse('https://x.test/e/a', body=b'<html></html>', encoding='utf-8', request=request)
+    [item] = list(spider.parse_event(resp))
+    assert item['title'] == 'Show A' and item['start_datetime'] == '2026-06-01T20:00'

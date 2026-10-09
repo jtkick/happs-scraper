@@ -1,5 +1,5 @@
 """
-Page → events. Shared by every spider (site-specific and generic).
+Page → events. Shared by the spider and the test-case runner (scraper/eval/run.py).
 
 extract_page(html, url, ...)  → PageResult
     Every event the page's own content yields, most trustworthy source first:
@@ -10,7 +10,7 @@ extract_page(html, url, ...)  → PageResult
       ≥2 recipe events (learned CSS)   → those
     Single-event pages (details) — the original waterfall, merged field by field
       JSON-LD → inline JSON (always; may lengthen description) → OpenGraph
-      → site selectors → AI (only if still no title + start date)
+      → AI (only if still no title + start date)
     AI may itself return a list, which then replaces the single event.
 
 finalize(data, ...)  → dict | None
@@ -61,12 +61,10 @@ def extract_page(
     html: str,
     url: str,
     *,
-    selectors: Optional[dict] = None,
     recipe_events: Optional[list[dict]] = None,
     ai: Optional[Callable] = None,
 ) -> PageResult:
     """
-    `selectors`      — already-extracted {field: value} from a site spider's CSS
     `recipe_events`  — events a learned recipe pulled from this page
     `ai`             — callable(html, url) → ai.AIResult, or None to disable AI
     """
@@ -106,10 +104,6 @@ def extract_page(
         if og:
             merge(page, og)
             page.setdefault('extraction_method', 'opengraph')
-
-    if not sufficient(page) and selectors:
-        merge(page, selectors)
-        page.setdefault('extraction_method', 'selectors')
 
     if not sufficient(page) and recipe_events:
         merge(page, recipe_events[0])

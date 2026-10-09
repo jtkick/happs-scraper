@@ -153,7 +153,7 @@ _NON_EVENT_TITLE = re.compile(
 
 _METHOD_CONFIDENCE = {
     'ical': 0.95, 'jsonld': 0.9, 'inline_json': 0.8, 'recipe': 0.75,
-    'selectors': 0.75, 'opengraph': 0.6, 'ai': 0.5,
+    'opengraph': 0.6, 'ai': 0.5,
 }
 
 

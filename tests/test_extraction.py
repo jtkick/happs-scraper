@@ -1,6 +1,8 @@
 """Tests for scraper/extraction.py — page → events, and per-event finalize."""
 import json
 
+import pytest
+
 from scraper import extraction
 from scraper.extractors.ai import AIResult
 
@@ -203,3 +205,29 @@ def test_span_shorter_than_the_repeat_is_one_occurrence():
                                 'start_datetime': '2026-10-08', 'end_datetime': '2026-10-11'})
     assert data['recurrence_freq'] == 'yearly' and data['recurrence_interval'] == 2
     assert data['end_datetime'] == '2026-10-11' and not data.get('recurrence_until')
+
+
+# ── Merge helpers ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('data, sufficient', [
+    ({'title': 'x', 'start_datetime': 'y'}, True),
+    ({'title': 'x'},                        False),
+    ({'start_datetime': 'y'},               False),
+    ({},                                    False),
+])
+def test_sufficient(data, sufficient):
+    assert extraction.sufficient(data) is sufficient
+
+
+def test_merge_does_not_clobber():
+    base = {'title': 'Kept', 'description': None}
+    extraction.merge(base, {'title': 'Ignored', 'description': 'Added', 'url': None})
+    assert base == {'title': 'Kept', 'description': 'Added'}
+
+
+def test_merge_enriched_upgrades_only_longer_descriptions():
+    base = {'description': 'Short blurb'}
+    extraction.merge_enriched(base, {'description': 'Tiny'})
+    assert base['description'] == 'Short blurb'
+    extraction.merge_enriched(base, {'description': 'A considerably longer blurb'})
+    assert base['description'] == 'A considerably longer blurb'

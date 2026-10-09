@@ -1,5 +1,7 @@
 """
-GenericEventSpider — one spider for every venue website.
+GenericEventSpider — one spider for every venue website. A site that needs
+hand-tuning gets a locked recipe override on its backend Source (events_urls,
+item_css, detail_link_css, pagination_css), not a spider of its own.
 
     scrapy crawl generic -a limit=200          # crawl sources the backend says are due
     scrapy crawl generic -a source=venue.com   # one registered source (debugging)
@@ -48,12 +50,12 @@ from scraper.discovery.events_page import (
     events_urls_from_sitemap, find_events_pages, page_links, same_site, site_of,
 )
 from scraper.extractors import recipe as recipe_extractor
+from scraper.items import EventItem, event_item
 from scraper.platforms.base import Platform
 from scraper.rendering import raw_retry, render_meta, rendered_after_check
 from scraper.snapshots import SnapshotSampler
 from scraper.sources.client import BackendClient
 from scraper.sources.tracker import DETAIL_SAMPLE_MIN, RunTracker, SourceRun
-from scraper.spiders.base import BaseEventSpider
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,7 @@ _RENDERED_STAGES = ('home', 'listing', 'detail')
 _TEASER_CHARS = 300
 
 
-class GenericEventSpider(BaseEventSpider):
+class GenericEventSpider(scrapy.Spider):
     name = 'generic'
 
     def __init__(self, limit=50, source=None, url=None, relearn=False, keep_claiming=False,
@@ -488,11 +490,20 @@ class GenericEventSpider(BaseEventSpider):
 
     # ── Detail pages ──────────────────────────────────────────────────────────
 
-    def parse_event(self, response, **kwargs):
+    def parse_event(self, response):
+        """
+        A detail page. meta['partial'] is this same event as its listing showed
+        it; the page wins, the partial fills its gaps (scraper/extraction.py).
+        """
         run = self._run(response)
         if run:
             run.detail_pages += 1
-        yield from super().parse_event(response, **kwargs)
+        result = self.extract_page(response)
+        events = extraction.finalize_page(result, response.text, context=response.meta.get('context', {}),
+                                          partial=response.meta.get('partial'))
+        self.page_parsed(response, result, events, kind='detail')
+        for final in events:
+            yield self.build_item(final, response)
 
     def extract_page(self, response) -> extraction.PageResult:
         partial = response.meta.get('partial') or {}
@@ -536,10 +547,25 @@ class GenericEventSpider(BaseEventSpider):
             content_hash=new_hash, fingerprints=[], extraction_version=extraction.EXTRACTION_VERSION,
             fetched_at=now, last_listed_at=now)
 
-    def build_item(self, data: dict, response):
-        item = super().build_item(data, response)
-        item['source_id'] = response.meta.get('source_id')
-        return item
+    def build_item(self, data: dict, response) -> EventItem:
+        return event_item(data, source_url=response.url, source_id=response.meta.get('source_id'))
+
+    def _ai_extractor(self, response):
+        """The AI callable for extract_page, or None when AI is disabled."""
+        api_key = self.settings.get('ANTHROPIC_API_KEY', '')
+        if not api_key:
+            return None
+        from scraper.extractors import ai
+        venue = (response.meta.get('context') or {}).get('location_title')
+
+        def respond(system, user, schema, label):
+            # Kept on the response so a page snapshot can carry the model's exact answer.
+            data = ai._call(api_key, system, user, schema, label)
+            response.meta['ai_response'] = {
+                'model': ai.MODEL, 'prompt_hash': ai.prompt_hash(user), 'response': data}
+            return data
+
+        return lambda html, url: ai.extract_many(html, url, api_key, venue=venue, respond=respond)
 
     # ── Requests & bookkeeping ────────────────────────────────────────────────
 

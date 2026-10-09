@@ -13,8 +13,8 @@
 - Detail pages: followed when the listing lacks start/description (`required`) or the page probably says more (`soft`: cut-off description, no address, no end, unexplained multi-day span); soft follows leave `GENERIC_DETAIL_RESERVE` of the budget and the recipe learns `detail_useful`
 - Rendering: `scraper/rendering.py` — with `PLAYWRIGHT_ENABLED` every home/listing/detail page is rendered (feeds and sitemaps raw); a failed render is refetched raw; conditional listing checks go raw first and render only if changed (Chromium aborts on 304)
 - Page text: `scraper/text.py` `full_text` = visible DOM text + embedded-JSON text; used for recurrence (strong phrases near the title, single-event pages only) and when trafilatura comes back thin
-- Site-specific spiders still subclass `scraper/spiders/base.py` (`BaseEventSpider`); use only for high-volume sites worth hand-tuning
-- Page → events: `scraper/extraction.py` (`extract_page`, `finalize`). Listings: ≥2 JSON-LD/microdata → ≥2 inline-JSON → ≥2 recipe → AI list. Details: JSON-LD → inline JSON → OpenGraph → selectors → AI. Ambient context never supplies title/start/end (`PER_EVENT_KEYS`)
+- No site-specific spiders: hand-tune a site with a locked recipe override on its backend Source (`override` + `recipe_locked`: `events_urls`, `item_css`, `detail_link_css`, `pagination_css`); events become items via `scraper/items.py` `event_item`
+- Page → events: `scraper/extraction.py` (`extract_page`, `finalize`). Listings: ≥2 JSON-LD/microdata → ≥2 inline-JSON → ≥2 recipe → AI list. Details: JSON-LD → inline JSON → OpenGraph → AI. Ambient context never supplies title/start/end (`PER_EVENT_KEYS`)
 - Discovery: `scraper/discovery/events_page.py` (homepage link scoring, sitemap), `scraper/discovery/links.py` (detail links by repeated DOM structure, pagination)
 - Platform adapters: `scraper/platforms/` — contract in `base.py`, order in `__init__.py`. New platform = one file + tests in `tests/test_platforms.py`
 - Learned recipes: `scraper/extractors/recipe.py` — AI suggests CSS, verified locally (≥80% agreement) before saving
@@ -58,7 +58,6 @@
 - Diagnose missed-event reports: `python tools/process_reports.py [--save-cases]` (`--save-cases` puts each page in `review/inbox/`)
 - Health summary (exit 1 on newly broken sources): `python tools/crawl_summary.py --hours N`
 - Scheduled: `.github/workflows/scrape.yml` (hourly: missed-event reports → crawl due sources → health summary); drop its crawl step once the pool runs on the server (both can run at once: sources are leased)
-- Run a site-specific spider: `scrapy crawl <spider_name>`
 - Run tests: `pytest`
 - Run tests including AI extractor calls: `pytest --run-ai`
 - Review parses and add test cases: `python tools/review.py` → http://127.0.0.1:8765 (capture a URL, correct the events, "Save as fixture"; "Re-run" parses with the code on disk). `python tools/review.py sync` pulls crawl snapshots, admin corrections and missed reports into the inbox (needs `HAPPS_API_BASE` + `HAPPS_SCRAPER_TOKEN`)
