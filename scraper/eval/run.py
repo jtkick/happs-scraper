@@ -46,7 +46,7 @@ def run_case(case: Case, ai: Optional[str] = 'replay', *, api_key: str = '',
         response = HtmlResponse(url=case.url, body=case.html.encode('utf-8'), encoding='utf-8')
         finalized = _extract(case, response, _ai_callable(case, ai, api_key, model, result), result)
         result.events, result.dropped = dry_run(
-            [event_item(data, source_url=case.url) for data in finalized], None)
+            [event_item(data, source_url=case.url) for data in finalized])
     return result
 
 

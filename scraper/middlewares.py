@@ -58,7 +58,7 @@ class RotatingUserAgentMiddleware:
         random.shuffle(pool)
         self._cycle = itertools.cycle(pool)
 
-    def process_request(self, request, spider):
+    def process_request(self, request, spider=None):
         request.headers['User-Agent'] = next(self._cycle)
 
 

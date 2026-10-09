@@ -39,22 +39,8 @@ def anthropic_api_key():
 
 # ── Pipeline helpers ──────────────────────────────────────────────────────────
 
-class _FakeSettings(dict):
-    """Stands in for Scrapy's Settings object, which pipelines access via .get()."""
-    def get(self, key, default=None):
-        return super().get(key, default)
-
-
-class FakeSpider:
-    """Minimal spider double — pipelines only ever touch `.settings`."""
-    def __init__(self, **settings):
-        self.settings = _FakeSettings(settings)
-
-
 @pytest.fixture
 def dedup_pipeline():
-    """An opened in-run FingerprintDedupPipeline."""
+    """A fresh in-run FingerprintDedupPipeline."""
     from scraper.pipelines import FingerprintDedupPipeline
-    pipeline = FingerprintDedupPipeline()
-    pipeline.open_spider(FakeSpider())
-    return pipeline
+    return FingerprintDedupPipeline()

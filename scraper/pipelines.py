@@ -8,6 +8,9 @@ Item pipelines — run in priority order for every EventItem.
 
 Drops raise DropItem('<reason_code>: detail'); the run tracker records the
 code so a crawl can explain what it missed.
+
+Settings come from the crawler (from_crawler), not the `spider` argument,
+which Scrapy is dropping; built bare (tests, dry_run) they use the defaults.
 """
 
 from __future__ import annotations
@@ -29,11 +32,6 @@ from scraper.items import PAYLOAD_FIELDS, RECURRENCE_DEFAULTS, default
 logger = logging.getLogger(__name__)
 
 
-def spider_setting(spider, name, default=None):
-    settings = getattr(spider, 'settings', None)
-    return settings.get(name, default) if settings is not None else default
-
-
 # ── 100 · Normalize ───────────────────────────────────────────────────────────
 
 class NormalizePipeline:
@@ -45,13 +43,20 @@ class NormalizePipeline:
         'TO_TIMEZONE': 'UTC',
     }
 
-    def process_item(self, item, spider):
+    def __init__(self, settings=None):
+        self.default_timezone = (settings or {}).get('DEFAULT_EVENT_TIMEZONE') or None
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.settings)
+
+    def process_item(self, item, spider=None):
         # Validate required fields before anything else.
         raw_title = self._clean(item.get('title'))
         if not raw_title:
             raise DropItem("missing_title")
 
-        tz = item.get('timezone') or spider_setting(spider, 'DEFAULT_EVENT_TIMEZONE')
+        tz = item.get('timezone') or self.default_timezone
         start = self._parse_date(item.get('start_datetime'), tz)
         if not start:
             raise DropItem(f"unparseable_start: {raw_title}")
@@ -168,7 +173,14 @@ class ValidatePipeline:
 
     MAX_FUTURE = timedelta(days=548)
 
-    def process_item(self, item, spider):
+    def __init__(self, settings=None):
+        self.review_threshold = float((settings or {}).get('REVIEW_THRESHOLD', 0.7))
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.settings)
+
+    def process_item(self, item, spider=None):
         if item.get('drop_reason'):
             raise DropItem(f"{item['drop_reason']}: {item.get('title')}")
 
@@ -190,8 +202,7 @@ class ValidatePipeline:
             raise DropItem(f"past_event: {title}")
 
         item['confidence'] = self.score(item)
-        threshold = spider_setting(spider, 'REVIEW_THRESHOLD', 0.7)
-        item['review_required'] = item['confidence'] < threshold
+        item['review_required'] = item['confidence'] < self.review_threshold
         return item
 
     @staticmethod
@@ -228,18 +239,18 @@ def fingerprint_text(text) -> str:
 _CRAWL_FIELDS = frozenset({'source_url', 'source_id', 'fingerprint', 'ingest_status'})
 
 
-def dry_run(items, spider) -> tuple[list[dict], list[dict]]:
+def dry_run(items, settings=None) -> tuple[list[dict], list[dict]]:
     """
     Normalize + Validate without sending anything: (kept, dropped) as plain
     dicts, each dropped one with its 'drop_reason' code. Used to snapshot a
     page with the outcome a crawl gives it, and by the review tools.
     """
-    normalize, validate = NormalizePipeline(), ValidatePipeline()
+    normalize, validate = NormalizePipeline(settings), ValidatePipeline(settings)
     kept, dropped = [], []
     for item in items:
         item = item.copy()
         try:
-            item = validate.process_item(normalize.process_item(item, spider), spider)
+            item = validate.process_item(normalize.process_item(item))
         except DropItem as exc:
             dropped.append({**_plain(item), 'drop_reason': str(exc).split(':', 1)[0]})
             continue
@@ -269,16 +280,21 @@ class FingerprintDedupPipeline:
     name), so two sites never collide.
     """
 
-    def open_spider(self, spider):
+    def __init__(self, name: str = 'unknown'):
+        self.name = name
         self.seen: set[str] = set()
 
-    def process_item(self, item, spider):
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.spidercls.name)
+
+    def process_item(self, item, spider=None):
         from scraper.extractors.recurrence import signature
         if item.get('recurrence_freq', 'none') != 'none':
             fp = self._recurring_fingerprint(item, signature)
         else:
             fp = self._oneoff_fingerprint(item)
-        prefix = item.get('source_id') or getattr(spider, 'name', None) or 'unknown'
+        prefix = item.get('source_id') or self.name
         item['fingerprint'] = f'{prefix}:{fp}'
         if item['fingerprint'] in self.seen:
             raise DropItem(f"duplicate_in_run: {item.get('title')}")
@@ -325,16 +341,28 @@ class APISubmitPipeline:
     recorded on item['ingest_status'] for the crawl-run report.
     """
 
-    def open_spider(self, spider):
+    def __init__(self, client=None, owns_client: bool = False):
+        self.client = client
+        self.owns_client = owns_client
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        # The spider's client when it has one, so a crawler keeps one connection to the backend.
+        shared = getattr(crawler.spider, 'client', None)
+        if shared is not None:
+            return cls(shared)
         from scraper.sources.client import BackendClient
-        self.client = BackendClient.from_settings(spider.settings)
+        return cls(BackendClient.from_settings(crawler.settings), owns_client=True)
+
+    def open_spider(self, spider=None):
         if not self.client.token:
             logger.warning("HAPPS_SCRAPER_TOKEN not set — submissions will be rejected")
 
-    def close_spider(self, spider):
-        self.client.close()
+    def close_spider(self, spider=None):
+        if self.owns_client:
+            self.client.close()
 
-    def process_item(self, item, spider):
+    def process_item(self, item, spider=None):
         status, body = self.client.ingest(self._build_payload(item))
         if status == 201:
             item['ingest_status'] = 'created'

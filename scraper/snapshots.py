@@ -51,7 +51,7 @@ class SnapshotSampler:
         """Queue the page if it's worth reviewing. Returns the reasons, or None."""
         if len(self.pending) >= self.max_per_run or len(response.body) > MAX_PAGE_BYTES:
             return None
-        kept, dropped = dry_run([spider.build_item(e, response) for e in events], spider)
+        kept, dropped = dry_run([spider.build_item(e, response) for e in events], spider.settings)
         meta = response.meta
         recipe = meta.get(RECIPE) or {}
         reasons = []

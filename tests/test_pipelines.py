@@ -371,9 +371,9 @@ def test_ai_events_go_to_review(validate):
     assert item['review_required'] is True
 
 
-def test_review_threshold_is_configurable(validate):
-    from tests.conftest import FakeSpider
-    item = validate.process_item(_valid(extraction_method='ai'), FakeSpider(REVIEW_THRESHOLD=0.4))
+def test_review_threshold_is_configurable():
+    from scraper.pipelines import ValidatePipeline
+    item = ValidatePipeline({'REVIEW_THRESHOLD': 0.4}).process_item(_valid(extraction_method='ai'))
     assert item['review_required'] is False
 
 
@@ -408,3 +408,18 @@ def test_recurring_event_that_ended_is_dropped(validate):
 
 def test_future_rdates_keep_a_past_anchor(validate):
     validate.process_item(_valid(start_datetime=_future(-30), rdates=[_future(10)]), None)
+
+
+def test_pipelines_read_settings_from_the_crawler():
+    from scrapy.settings import Settings
+    from scraper.pipelines import FingerprintDedupPipeline, NormalizePipeline
+    client = FakeClient(201, {'id': 'e1'})
+    crawler = type('Crawler', (), {'settings': Settings({'DEFAULT_EVENT_TIMEZONE': 'America/Chicago'}),
+                                   'spidercls': type('S', (), {'name': 'generic'}),
+                                   'spider': type('Sp', (), {'client': client})()})()
+    normalize = NormalizePipeline.from_crawler(crawler)
+    assert normalize.process_item(_item(start_datetime='2026-06-05T19:00:00'))['start_datetime'] \
+        == '2026-06-06T00:00:00+00:00'
+    assert FingerprintDedupPipeline.from_crawler(crawler).name == 'generic'
+    submit = APISubmitPipeline.from_crawler(crawler)
+    assert submit.client is client and not submit.owns_client
