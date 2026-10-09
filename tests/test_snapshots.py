@@ -1,4 +1,5 @@
 """Tests for scraper/snapshots.py: which crawled pages are saved for review."""
+import asyncio
 import base64
 import gzip
 import json
@@ -100,7 +101,8 @@ def test_spider_snapshots_listing_pages():
     node = json.dumps([{'@type': 'Event', 'name': n, 'startDate': _soon(), 'description': 'd'}
                        for n in ('Jazz', 'Trivia')])
     body = f'<html><head><script type="application/ld+json">{node}</script></head></html>'
-    list(spider.parse_listing(HtmlResponse(request.url, body=body.encode(), encoding='utf-8', request=request)))
+    response = HtmlResponse(request.url, body=body.encode(), encoding='utf-8', request=request)
+    asyncio.run(_drain(spider.parse_listing(response)))
     [snap] = spider.snapshots.pending
     assert [e['title'] for e in snap['parsed']['events']] == ['Jazz', 'Trivia']
     assert snap['source_id'] == 'src-1'
@@ -116,3 +118,7 @@ def test_ai_extractor_keeps_the_answer_on_the_response(monkeypatch):
     spider._ai_extractor(response)(response.text, response.url)
     assert response.meta['ai_response']['response'] is answer
     assert response.meta['ai_response']['prompt_hash']
+
+
+async def _drain(output):
+    return [x async for x in output]

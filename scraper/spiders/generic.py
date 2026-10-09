@@ -33,6 +33,7 @@ Per source:
      time a batch is done (scraper/sources/tracker.py).
 """
 from __future__ import annotations
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -198,40 +199,49 @@ class GenericEventSpider(scrapy.Spider):
 
     # ── Discovery ─────────────────────────────────────────────────────────────
 
-    def parse_home(self, response):
+    async def parse_home(self, response):
         run = self._run(response)
         run.listing_pages += 1
         meta = self._carry(response)
 
-        found = yield from self._maybe_platform(response, meta, run)
-        if found:
+        taken = self._maybe_platform(response, meta, run)
+        if taken is not None:
+            for request in taken:
+                yield request
             return
 
         urls = find_events_pages(response)
         if urls:
-            yield from self._follow_listings(urls, meta, run, origin='heuristic')
+            for request in self._follow_listings(urls, meta, run, origin='heuristic'):
+                yield request
             return
 
         run.sitemaps = sitemap.SitemapRead(
             purpose='discover', max_children=sitemap.DISCOVERY_CHILDREN, home_url=response.url,
             home_links=[(text, url) for text, url, _ in page_links(response)])
-        yield from self._read_sitemaps(run, meta, response.url)
+        requests = self._sitemap_requests(run, meta, response.url)
+        for request in requests:
+            yield request
+        if not requests:                # the recipe knows the site has none
+            async for request in self._sitemaps_read(run, meta):
+                yield request
 
-    def _discovered(self, read: sitemap.SitemapRead, meta, run: SourceRun):
+    async def _discovered(self, read: sitemap.SitemapRead, meta, run: SourceRun):
         """The sitemaps are in: events pages among their URLs, else Claude's pick, else the homepage."""
         urls = [u for u in events_urls_from_sitemap(read.locs) if same_site(u, read.home_url)]
-        if urls:
-            yield from self._follow_listings(urls, meta, run, origin='heuristic')
-            return
-        api_key = self.config.api_key
-        if api_key and read.home_links:
+        origin = 'heuristic'
+        if not urls and self.config.api_key and read.home_links:
             from scraper.extractors import ai
-            urls = ai.pick_events_links(read.home_links, read.home_url, api_key)
-            if urls:
-                yield from self._follow_listings(urls, meta, run, origin='ai')
-                return
-        # Many small sites list events on the homepage itself.
-        yield from self._follow_listings([read.home_url], meta, run, origin='heuristic', dont_filter=True)
+            urls = await asyncio.to_thread(ai.pick_events_links, read.home_links, read.home_url,
+                                           self.config.api_key)
+            origin = 'ai'
+        if urls:
+            requests = self._follow_listings(urls, meta, run, origin=origin)
+        else:
+            # Many small sites list events on the homepage itself.
+            requests = self._follow_listings([read.home_url], meta, run, origin='heuristic', dont_filter=True)
+        for request in requests:
+            yield request
 
     def _follow_listings(self, urls, meta, run, origin, dont_filter=False):
         self.tracker.learn(run, origin, events_urls=list(urls))
@@ -253,66 +263,71 @@ class GenericEventSpider(scrapy.Spider):
             yield from requests
             return
         run.sitemaps = sitemap.SitemapRead(purpose='lastmod', waiting=list(requests))
-        yield from self._read_sitemaps(run, meta, source['homepage_url'])
+        yield from self._sitemap_requests(run, meta, source['homepage_url'])
 
-    def _read_sitemaps(self, run, meta, base_url):
+    def _sitemap_requests(self, run, meta, base_url) -> list:
         """
-        Fetch run.sitemaps raw: the recipe's sitemap_urls, else those robots.txt
-        names, else /sitemap.xml. _sitemaps_read carries on once the last is in.
+        Requests for run.sitemaps, fetched raw: the recipe's sitemap_urls, else
+        those robots.txt names, else /sitemap.xml. _sitemaps_read carries on
+        once the last is in. Empty when the recipe knows there are none.
         """
         roots = meta[RECIPE].get('sitemap_urls')
         if roots is None:
-            yield self._sitemap_request(urljoin(base_url, '/robots.txt'), meta, run,
-                                        self.parse_robots_sitemaps, {ROBOTS: True})
-        elif not roots:
-            yield from self._sitemaps_read(run, meta)
-        for url in (roots or [])[:sitemap.MAX_ROOTS]:
-            yield self._sitemap_request(url, meta, run, self.parse_sitemap, {ROOT: True})
+            return [self._sitemap_request(urljoin(base_url, '/robots.txt'), meta, run,
+                                          self.parse_robots_sitemaps, {ROBOTS: True})]
+        return [self._sitemap_request(url, meta, run, self.parse_sitemap, {ROOT: True})
+                for url in roots[:sitemap.MAX_ROOTS]]
 
-    def parse_robots_sitemaps(self, response):
+    async def parse_robots_sitemaps(self, response):
         run, meta = self._run(response), self._carry(response)
         for url in sitemap.roots(response.body, response.url):
             yield self._sitemap_request(url, meta, run, self.parse_sitemap, {ROOT: True})
-        yield from self._sitemap_done(run, meta)
+        async for request in self._sitemap_done(run, meta):
+            yield request
 
-    def parse_sitemap(self, response):
+    async def parse_sitemap(self, response):
         run, meta = self._run(response), self._carry(response)
         kind, entries = sitemap.parse(response.body)
         for url in run.sitemaps.add(response.request.url, kind, entries, root=response.meta.get(ROOT)):
             yield self._sitemap_request(url, meta, run, self.parse_sitemap)
-        yield from self._sitemap_done(run, meta)
+        async for request in self._sitemap_done(run, meta):
+            yield request
 
-    def _sitemap_failed(self, failure):
+    async def _sitemap_failed(self, failure):
         request = failure.request
         run, meta = self.tracker.for_request(request), self._carry(request)
         if request.meta.get(ROBOTS):
             yield self._sitemap_request(urljoin(request.url, '/sitemap.xml'), meta, run,
                                         self.parse_sitemap, {ROOT: True})
-        yield from self._sitemap_done(run, meta)
+        async for later in self._sitemap_done(run, meta):
+            yield later
 
     def _sitemap_request(self, url, meta, run, callback, extra=None):
         run.sitemaps.pending += 1
         return scrapy.Request(url, callback=callback, errback=self._sitemap_failed, dont_filter=True,
                               meta={**meta, STAGE: 'sitemap', **(extra or {})})
 
-    def _sitemap_done(self, run, meta):
+    async def _sitemap_done(self, run, meta):
         run.sitemaps.pending -= 1
         if not run.sitemaps.pending:
-            yield from self._sitemaps_read(run, meta)
+            async for request in self._sitemaps_read(run, meta):
+                yield request
 
-    def _sitemaps_read(self, run, meta):
+    async def _sitemaps_read(self, run, meta):
         read, run.sitemaps = run.sitemaps, None
         if meta[RECIPE].get('sitemap_urls') is None:
             self.tracker.learn(run, 'heuristic', sitemap_urls=list(dict.fromkeys(read.roots)))
         run.lastmod = read.lastmod
         if read.purpose == 'discover':
-            yield from self._discovered(read, meta, run)
+            async for request in self._discovered(read, meta, run):
+                yield request
         else:
-            yield from read.waiting
+            for request in read.waiting:
+                yield request
 
     # ── Listings ──────────────────────────────────────────────────────────────
 
-    def parse_listing(self, response):
+    async def parse_listing(self, response):
         rendered = rendered_after_check(response.request, self.settings)
         if rendered is not None:
             yield rendered          # changed since last run: now fetch it as the crawl sees it
@@ -324,20 +339,22 @@ class GenericEventSpider(scrapy.Spider):
         recipe = meta[RECIPE]
 
         if not recipe.get('platform'):
-            found = yield from self._maybe_platform(response, meta, run)
-            if found:
+            taken = self._maybe_platform(response, meta, run)
+            if taken is not None:
+                for request in taken:
+                    yield request
                 return
 
-        result, events = extraction.parse_page(response, kind='listing', recipe=recipe,
-                                               context=meta[CONTEXT], ai=self._ai_extractor(response))
+        result, events = await extraction.parse_page_async(
+            response, kind='listing', recipe=recipe, context=meta[CONTEXT], ai=self._ai_extractor(response))
         run.strategies[result.strategy] += len(result.events)
         if recipe.get('item_css') and result.strategy == 'ai':
             run.strategy_fallback = True
         if result.ai_truncated:
             run.complete = False
         if result.strategy == 'ai' and len(result.events) >= 2 and not recipe.get('item_css'):
-            learned = recipe_extractor.learn(response, [d for d, _ in result.events],
-                                             self.config.api_key)
+            learned = await asyncio.to_thread(recipe_extractor.learn, response,
+                                              [d for d, _ in result.events], self.config.api_key)
             if learned:
                 self.tracker.learn(run, 'ai', **learned)
 
@@ -345,7 +362,8 @@ class GenericEventSpider(scrapy.Spider):
                                          pagination_css=recipe.get('pagination_css'))
         self.page_parsed(response, result, events, kind='listing')
 
-        yield from self._emit_listing_events(events, response, meta, run)
+        for output in self._emit_listing_events(events, response, meta, run):
+            yield output
 
         if not events:
             for url in found.details:
@@ -420,35 +438,31 @@ class GenericEventSpider(scrapy.Spider):
 
     # ── Platforms ─────────────────────────────────────────────────────────────
 
-    def _maybe_platform(self, response, meta, run):
-        """Generator: yields platform requests; returns True when a platform took over."""
+    def _maybe_platform(self, response, meta, run) -> Optional[list]:
+        """The requests to make when a platform takes this page over, else None."""
         adapter = platforms.detect(response)
         if adapter is None:
-            return False
+            return None
         if adapter.rerender_only:
             if response.meta.get('playwright') or response.meta.get(RENDER_FAILED):
-                return False            # already rendered (or tried) — carry on normally
+                return None             # already rendered (or tried) — carry on normally
             if not self.config.render:
                 message = f'needs_js ({adapter.name}): {response.url}'
                 if message not in run.errors:
                     run.errors.append(message)
-                return False
+                return None
             logger.info("%s: %s page, re-requesting rendered", response.url, adapter.name)
             self.tracker.learn(run, 'heuristic', render_js=True)
             meta[RECIPE] = {**meta[RECIPE], 'render_js': True}
-            yield response.request.replace(
-                meta={**meta, STAGE: response.meta.get(STAGE), 'playwright': True},
-                dont_filter=True)
-            return True
+            return [response.request.replace(
+                meta={**meta, STAGE: response.meta.get(STAGE), 'playwright': True}, dont_filter=True)]
         urls = adapter.feed_urls(response)
         if not urls:
-            return False
+            return None
         logger.info("%s: detected platform %s", response.url, adapter.name)
         self.tracker.learn(run, 'platform', platform=adapter.name, platform_urls=urls)
         meta = {**meta, RECIPE: {**meta[RECIPE], 'platform': adapter.name}}
-        for url in urls:
-            yield self._platform_request(url, adapter, meta, run)
-        return True
+        return [self._platform_request(url, adapter, meta, run) for url in urls]
 
     def _platform_request(self, url, adapter, meta, run):
         # Feeds (iCal, JSON) are fetched raw; an adapter that only locates an HTML page is rendered.
@@ -456,20 +470,22 @@ class GenericEventSpider(scrapy.Spider):
         return self._request(url, self.parse_platform, {**meta, PLATFORM: adapter.name},
                              'listing', run, render=html_page)
 
-    def parse_platform(self, response):
+    async def parse_platform(self, response):
         run = self._run(response)
         adapter = platforms.get(response.meta[PLATFORM])
         meta = self._carry(response)
         finals = extraction.parse_feed(adapter, response, context=meta[CONTEXT])
         if finals is None:           # adapter only locates the page; extract it generically
-            yield from self.parse_listing(response)
+            async for output in self.parse_listing(response):
+                yield output
             return
         run.listing_pages += 1
         run.strategies[f'platform:{adapter.name}'] += len(finals)
         if self.snapshots:
             result = extraction.PageResult(single=False, strategy=f'platform:{adapter.name}')
             self.snapshots.consider(self, response, result, finals, kind='listing', platform=adapter.name)
-        yield from self._emit_listing_events(finals, response, meta, run)
+        for output in self._emit_listing_events(finals, response, meta, run):
+            yield output
         next_url = adapter.next_url(response)
         if next_url and run.scheduled_listings < self.config.max_listing_pages:
             yield self._platform_request(next_url, adapter, meta, run)
@@ -478,12 +494,12 @@ class GenericEventSpider(scrapy.Spider):
 
     # ── Detail pages ──────────────────────────────────────────────────────────
 
-    def parse_event(self, response):
+    async def parse_event(self, response):
         """
         A detail page. meta[PARTIAL] is this same event as its listing showed
         it; the page wins, the partial fills its gaps (scraper/extraction.py).
         """
-        result, events = extraction.parse_page(
+        result, events = await extraction.parse_page_async(
             response, kind='detail', context=response.meta.get(CONTEXT, {}),
             partial=response.meta.get(PARTIAL), ai=self._ai_extractor(response))
         run = self._run(response)

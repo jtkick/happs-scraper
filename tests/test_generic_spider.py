@@ -2,6 +2,7 @@
 Tests for GenericEventSpider — discovery → listing → detail flow, driven
 offline: each test feeds hand-built responses to the spider's callbacks.
 """
+import asyncio
 import json
 
 import pytest
@@ -44,8 +45,17 @@ def ld(*events):
     return f'<script type="application/ld+json">{json.dumps(nodes)}</script>'
 
 
+def drain(output):
+    """Everything a callback yields; the ones that may call the model are async generators."""
+    if hasattr(output, '__aiter__'):
+        async def collect():
+            return [x async for x in output]
+        return asyncio.run(collect())
+    return list(output)
+
+
 def split(output):
-    output = list(output)
+    output = drain(output)
     return ([o for o in output if isinstance(o, EventItem)],
             [o for o in output if isinstance(o, scrapy.Request)])
 
@@ -212,12 +222,12 @@ def test_failed_render_is_fetched_raw_once():
     request = listing_request(spider)
     body = html(ld(('Jazz', '2026-06-05T19:00', {'url': '/events/jazz'})))
     _, [detail] = split(spider.parse_listing(respond(request, body)))
-    [retry] = list(spider._errback(_failure(detail, TimeoutError('render timed out'))))
+    [retry] = drain(spider._errback(_failure(detail, TimeoutError('render timed out'))))
     assert retry.url == detail.url and retry.dont_filter
     assert not retry.meta.get('playwright') and retry.meta['render_failed']
     assert retry.meta['partial']['title'] == 'Jazz'
     assert 'render_failed' in spider.tracker.for_request(detail).errors[0]
-    [item] = list(spider._errback(_failure(retry)))          # raw failed too: keep the partial
+    [item] = drain(spider._errback(_failure(retry)))          # raw failed too: keep the partial
     assert item['title'] == 'Jazz'
 
 
@@ -252,7 +262,7 @@ def test_incomplete_events_fetch_their_detail_page_with_the_partial(spider):
     assert detail.url == 'https://venue.test/events/jazz'
     assert detail.meta['partial']['title'] == 'Jazz'
 
-    [item] = list(spider.parse_event(respond(detail, html('<p>nothing useful</p>'))))
+    [item] = drain(spider.parse_event(respond(detail, html('<p>nothing useful</p>'))))
     assert item['title'] == 'Jazz' and item['start_datetime'] == '2026-06-05T19:00'
 
 
@@ -261,7 +271,7 @@ def test_failed_detail_page_still_emits_the_partial(spider):
     body = html(ld(('Jazz', '2026-06-05T19:00', {'url': '/events/jazz'}),
                    ('Blues', '2026-06-07T19:00', {'url': '/events/blues'})))
     _, [detail, _] = split(spider.parse_listing(respond(request, body)))
-    [item] = list(spider._errback(_failure(detail)))
+    [item] = drain(spider._errback(_failure(detail)))
     assert item['title'] == 'Jazz' and item['source_id'] == 'src-1'
     assert spider.tracker.for_request(detail).complete is False
 
@@ -294,8 +304,8 @@ def test_soft_detail_pages_are_scored(spider):
     request = listing_request(spider)
     _, requests = split(spider.parse_listing(respond(request, soft_listing(2))))
     address = ld(('Show 0', '2026-06-05T19:00', {'location': {'@type': 'Place', 'address': '1 Main St'}}))
-    list(spider.parse_event(respond(requests[0], html(address))))
-    list(spider.parse_event(respond(requests[1], html('<p>nothing</p>'))))
+    drain(spider.parse_event(respond(requests[0], html(address))))
+    drain(spider.parse_event(respond(requests[1], html('<p>nothing</p>'))))
     run = spider.tracker.for_request(request)
     assert (run.soft_details, run.soft_details_useful) == (2, 1)
 
@@ -444,7 +454,7 @@ def test_parsed_detail_page_is_recorded():
     spider, request = spider_with()
     _, [detail] = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
     page = ld(('Jazz', '2026-06-05T19:00', {'description': 'Live jazz all night.'}))
-    [item] = list(spider.parse_event(respond(detail, html(page))))
+    [item] = drain(spider.parse_event(respond(detail, html(page))))
     record = spider.tracker.for_request(detail).pages.get(JAZZ)
     assert record['listing_hash'] == page_state.listing_hash(detail.meta['partial'])
     assert record['listing_url'] == EVENTS and record['listing_data']['title'] == 'Jazz'
@@ -456,7 +466,7 @@ def test_304_listing_refreshes_its_stale_detail_pages():
     spider, request = spider_with(jazz_record(fetched_at=ago(8)),
                                   {**jazz_record(), 'url': 'https://venue.test/events/fresh'})
     failure = _failure(request, NotModified('304 Not Modified: ' + EVENTS))
-    [detail] = list(spider._errback(failure))
+    [detail] = drain(spider._errback(failure))
     assert detail.url == JAZZ and detail.meta['refetch'] == 'max_age'
     assert detail.meta['partial']['title'] == 'Jazz'
 
@@ -482,9 +492,9 @@ def test_missing_sitemap_is_learned_as_none():
     spider = make_spider()
     spider.client = FakeClient([jazz_record()])
     [robots] = spider.entry_requests(source(effective_recipe={'events_urls': [EVENTS]}))
-    [fallback] = list(spider._sitemap_failed(_failure(robots)))
+    [fallback] = drain(spider._sitemap_failed(_failure(robots)))
     assert fallback.url == 'https://venue.test/sitemap.xml'
-    [listing] = list(spider._sitemap_failed(_failure(fallback)))
+    [listing] = drain(spider._sitemap_failed(_failure(fallback)))
     assert listing.url == EVENTS
     assert spider.tracker.for_request(listing).learned['sitemap_urls'] == []
 
@@ -500,7 +510,7 @@ def test_lastmod_that_missed_a_change_is_not_trusted():
     run = spider.tracker.for_request(detail)
     from scraper.discovery import sitemap
     run.lastmod[sitemap.key(JAZZ)] = datetime.now(timezone.utc) - timedelta(days=3)
-    list(spider.parse_event(respond(detail, html(ld(('Jazz', '2026-06-05T19:00', {}))))))
+    drain(spider.parse_event(respond(detail, html(ld(('Jazz', '2026-06-05T19:00', {}))))))
     assert run.learned['lastmod_trusted'] is False
 
 
@@ -533,7 +543,7 @@ def test_idle_spider_claims_the_next_batch():
 def test_idle_spider_reports_the_finished_batch_before_claiming():
     spider = claiming_spider([[source(id='b', domain='b.test', homepage_url='https://b.test/')]])
     flushed = []
-    spider.tracker.flush = lambda: flushed.append(list(spider.tracker.runs))
+    spider.tracker.flush = lambda: flushed.append(drain(spider.tracker.runs))
     spider.tracker.start(source())
     with pytest.raises(DontCloseSpider):
         spider._on_idle()
@@ -572,7 +582,7 @@ EVENT_PAGE = jsonld_page('''{
 
 
 def one_item(spider, resp):
-    items = list(spider.parse_event(resp))
+    items = drain(spider.parse_event(resp))
     assert len(items) == 1, f'expected exactly one item, got {len(items)}'
     return items[0]
 
@@ -619,7 +629,7 @@ def test_longer_description_from_inline_json_wins(spider):
 
 
 def test_page_without_a_title_yields_nothing(spider):
-    assert list(spider.parse_event(response('<html><body>nothing here</body></html>'))) == []
+    assert drain(spider.parse_event(response('<html><body>nothing here</body></html>'))) == []
 
 
 # ── Inherited context ─────────────────────────────────────────────────────────
@@ -642,7 +652,7 @@ def test_page_data_outranks_context(spider):
 def test_context_never_supplies_a_title(spider):
     """A venue-level title would label every event on the site identically."""
     resp = response('<html><body>nothing</body></html>', context={'title': 'The Rusty Tap'})
-    assert list(spider.parse_event(resp)) == []
+    assert drain(spider.parse_event(resp)) == []
 
 
 def test_missing_context_key_is_harmless(spider):
@@ -683,7 +693,7 @@ def test_schedule_text_is_not_emitted_on_the_item(spider):
 def test_listing_page_yields_one_item_per_event(spider):
     html = jsonld_page('''[{"@type": "Event", "name": "Show A", "startDate": "2026-06-01T20:00"},
                           {"@type": "Event", "name": "Show B", "startDate": "2026-06-02T20:00"}]''')
-    items = list(spider.parse_event(response(html, context={'location_title': 'Hall'})))
+    items = drain(spider.parse_event(response(html, context={'location_title': 'Hall'})))
     assert [i['title'] for i in items] == ['Show A', 'Show B']
     assert all(i['location_title'] == 'Hall' for i in items)
 
@@ -692,5 +702,25 @@ def test_listing_partial_survives_an_empty_detail_page(spider):
     partial = {'title': 'Show A', 'start_datetime': '2026-06-01T20:00'}
     request = Request('https://x.test/e/a', meta={'context': {}, 'partial': partial})
     resp = HtmlResponse('https://x.test/e/a', body=b'<html></html>', encoding='utf-8', request=request)
-    [item] = list(spider.parse_event(resp))
+    [item] = drain(spider.parse_event(resp))
     assert item['title'] == 'Show A' and item['start_datetime'] == '2026-06-01T20:00'
+
+
+# ── The model is called off the event loop ────────────────────────────────────
+
+def test_model_is_called_in_a_thread(monkeypatch):
+    import threading
+    from scraper.extractors import ai
+    threads = []
+
+    def answer(html, url, api_key, **kwargs):
+        threads.append(threading.current_thread())
+        return ai.AIResult(events=[{'title': t, 'start_datetime': '2026-06-05T19:00', 'evidence': t}
+                                   for t in ('Jazz', 'Blues')])
+    monkeypatch.setattr(ai, 'extract_many', answer)
+    monkeypatch.setattr('scraper.extractors.recipe.learn', lambda *a: None)
+    spider = make_spider(ANTHROPIC_API_KEY='key')
+    request = listing_request(spider)
+    items, _ = split(spider.parse_listing(respond(request, html('<p>Jazz. Blues.</p>'))))
+    assert [i['title'] for i in items] == ['Jazz', 'Blues']
+    assert threads and threads[0] is not threading.main_thread()

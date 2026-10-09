@@ -20,7 +20,7 @@
 - Discovery: `scraper/discovery/events_page.py` (homepage link scoring, scoring sitemap URLs), `scraper/discovery/links.py` (detail links by repeated DOM structure, pagination); sitemaps are read by `scraper/discovery/sitemap.py` `SitemapRead` (robots.txt roots, else `/sitemap.xml`; indexes and gzip), both to discover events pages and for `lastmod`
 - Platform adapters: `scraper/platforms/` — contract in `base.py`, order in `__init__.py`. New platform = one file + tests in `tests/test_platforms.py`
 - Learned recipes: `scraper/extractors/recipe.py` — AI suggests CSS, verified locally (≥80% agreement) before saving
-- AI: `scraper/extractors/ai.py` — Haiku with structured outputs; `evidence` snippet must appear in page text or the event is dropped as `ai_unverified`
+- AI: `scraper/extractors/ai.py` — Haiku with structured outputs; `evidence` snippet must appear in page text or the event is dropped as `ai_unverified`; the crawl never calls the model on the event loop: callbacks that may reach it are async and use `extraction.parse_page_async` / `asyncio.to_thread` (tests drain them with `drain()`)
 - Backend API client + run tracker: `scraper/sources/client.py`, `scraper/sources/tracker.py`
 - Pipeline order: `scraper/pipelines.py` (100 Normalize → 150 Validate → 200 Fingerprint (in-run dedup) → 300 APISubmit (upsert)). Drops raise `DropItem('<reason_code>: …')`; the code is reported per run
 - Dates: naive strings are read in the item's `timezone` (source zone, else `DEFAULT_EVENT_TIMEZONE`); yearless dates prefer the future

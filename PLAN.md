@@ -13,9 +13,6 @@ Each is pinned by a strict `xfail` test — fix the code and remove the marker t
 
 
 ### Universal scraper follow-ups
-- **AI calls block the reactor.** `ai.extract_many` / `pick_events_links` / `suggest_recipe` are synchronous
-  inside Scrapy callbacks, so a slow Claude call stalls every in-flight domain. Move them to
-  `deferToThread` (or the async client) before crawling hundreds of sources per run.
 - **Detail pages have no learned recipe.** Recipes cover listings only; a site whose events only exist on
   detail pages without structured data uses AI on every detail page, every run. Learn a detail recipe the
   same way (AI result → CSS → verify).

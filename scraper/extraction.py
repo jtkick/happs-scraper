@@ -14,10 +14,14 @@ extract_page(html, url, ...)  → PageResult
     AI may itself return a list, which then replaces the single event.
 
 parse_page(response, kind, ...) → (PageResult, [event])
+parse_page_async(...)              the same, with the model called in a thread
 parse_feed(adapter, response, ...) → [event] | None
     One page start to finish, as the crawl parses it. The spider and the
     test-case runner (scraper/eval/run.py) both call these, so the fixtures
-    test exactly what the crawl does.
+    test exactly what the crawl does. extract_page and parse_page are written
+    once, as generators that pause (yield) when they need the model and are
+    sent its answer; the sync and async entry points only differ in how they
+    get that answer, so the crawl never blocks on Claude.
 
 finalize(data, ...)  → dict | None
     Fill gaps from the listing partial and the ambient context, then run the
@@ -26,6 +30,7 @@ finalize(data, ...)  → dict | None
 """
 
 from __future__ import annotations
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -72,6 +77,19 @@ def parse_page(response, *, kind: str, recipe: Optional[dict] = None, context: O
     A detail page takes `partial`, its listing entry, which fills its gaps; AI is
     skipped when that entry already has a title and start.
     """
+    steps = _parse_steps(response, kind, recipe, context, partial, use_ai=ai is not None)
+    return _run(steps, lambda: ai(response.text, response.url))
+
+
+async def parse_page_async(response, *, kind: str, recipe: Optional[dict] = None,
+                           context: Optional[dict] = None, partial: Optional[dict] = None,
+                           ai: Optional[Callable] = None) -> tuple[PageResult, list[dict]]:
+    """parse_page, with the model called in a thread so the crawl's other pages keep moving."""
+    steps = _parse_steps(response, kind, recipe, context, partial, use_ai=ai is not None)
+    return await _run_async(steps, lambda: asyncio.to_thread(ai, response.text, response.url))
+
+
+def _parse_steps(response, kind, recipe, context, partial, use_ai):
     recipe = recipe or {}
     recipe_events = None
     if kind == 'listing':
@@ -79,9 +97,28 @@ def parse_page(response, *, kind: str, recipe: Optional[dict] = None, context: O
         if recipe.get('item_css'):
             recipe_events = recipe_extractor.extract(response, recipe)
     elif partial and sufficient(partial):
-        ai = None
-    result = extract_page(response.text, response.url, recipe_events=recipe_events, ai=ai)
+        use_ai = False
+    result = yield from _extract_steps(response.text, response.url, recipe_events, use_ai)
     return result, finalize_page(result, response.text, context=context, partial=partial)
+
+
+def _run(steps, ask):
+    """Drive a parse generator, answering its one request for the model with ask()."""
+    try:
+        next(steps)
+        steps.send(ask())
+    except StopIteration as done:
+        return done.value
+    raise RuntimeError('a parse asked for the model twice')
+
+
+async def _run_async(steps, ask):
+    try:
+        next(steps)
+        steps.send(await ask())
+    except StopIteration as done:
+        return done.value
+    raise RuntimeError('a parse asked for the model twice')
 
 
 def parse_feed(adapter, response, *, context: Optional[dict] = None) -> Optional[list[dict]]:
@@ -109,6 +146,10 @@ def extract_page(
     `recipe_events`  — events a learned recipe pulled from this page
     `ai`             — callable(html, url) → ai.AIResult, or None to disable AI
     """
+    return _run(_extract_steps(html, url, recipe_events, ai is not None), lambda: ai(html, url))
+
+
+def _extract_steps(html, url, recipe_events, use_ai):
     jl_pairs = jsonld.extract_all_with_nodes(html, url)
     if len(jl_pairs) >= 2:
         return PageResult(
@@ -151,8 +192,8 @@ def extract_page(
         page.setdefault('extraction_method', 'recipe')
 
     result = PageResult(strategy='waterfall')
-    if not sufficient(page) and ai is not None:
-        ai_result = ai(html, url)
+    if not sufficient(page) and use_ai:
+        ai_result = yield
         if ai_result is not None:
             result.ai_used = True
             result.ai_truncated = ai_result.truncated
