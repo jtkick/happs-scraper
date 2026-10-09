@@ -35,7 +35,9 @@ Per source:
 from __future__ import annotations
 import logging
 import time
+from dataclasses import dataclass
 from datetime import timedelta
+from functools import cached_property
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
@@ -44,7 +46,7 @@ from scrapy import signals
 from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from scrapy.spidermiddlewares.httperror import HttpError
 
-from scraper import extraction, follow, page_state, platforms
+from scraper import extraction, follow, page_state, platforms, settings as defaults
 from scraper.discovery import links as link_classifier, sitemap
 from scraper.discovery.events_page import (
     events_urls_from_sitemap, find_events_pages, page_links, same_site, site_of,
@@ -67,6 +69,29 @@ logger = logging.getLogger(__name__)
 
 # Stages whose pages are HTML, and so are rendered when Playwright is on.
 _RENDERED_STAGES = ('home', 'listing', 'detail')
+
+
+@dataclass(frozen=True)
+class CrawlConfig:
+    """The settings the spider reads, read once; defaults are scraper/settings.py's."""
+    max_listing_pages: int = defaults.GENERIC_MAX_LISTING_PAGES
+    max_detail_pages: int = defaults.GENERIC_MAX_DETAIL_PAGES
+    detail_reserve: int = defaults.GENERIC_DETAIL_RESERVE
+    page_max_age: timedelta = timedelta(days=defaults.PAGE_MAX_AGE_DAYS)
+    api_key: str = ''
+    render: bool = False
+
+    @classmethod
+    def from_settings(cls, settings) -> 'CrawlConfig':
+        return cls(
+            max_listing_pages=settings.getint('GENERIC_MAX_LISTING_PAGES', cls.max_listing_pages),
+            max_detail_pages=settings.getint('GENERIC_MAX_DETAIL_PAGES', cls.max_detail_pages),
+            detail_reserve=settings.getint('GENERIC_DETAIL_RESERVE', cls.detail_reserve),
+            page_max_age=timedelta(days=settings.getfloat('PAGE_MAX_AGE_DAYS',
+                                                          cls.page_max_age / timedelta(days=1))),
+            api_key=settings.get('ANTHROPIC_API_KEY') or '',
+            render=settings.getbool('PLAYWRIGHT_ENABLED'),
+        )
 
 
 class GenericEventSpider(scrapy.Spider):
@@ -99,6 +124,10 @@ class GenericEventSpider(scrapy.Spider):
         crawler.signals.connect(spider._on_closed, signal=signals.spider_closed)
         crawler.signals.connect(spider._on_idle, signal=signals.spider_idle)
         return spider
+
+    @cached_property
+    def config(self) -> CrawlConfig:
+        return CrawlConfig.from_settings(self.settings)
 
     # ── Entry ─────────────────────────────────────────────────────────────────
 
@@ -194,7 +223,7 @@ class GenericEventSpider(scrapy.Spider):
         if urls:
             yield from self._follow_listings(urls, meta, run, origin='heuristic')
             return
-        api_key = self.settings.get('ANTHROPIC_API_KEY', '')
+        api_key = self.config.api_key
         if api_key and read.home_links:
             from scraper.extractors import ai
             urls = ai.pick_events_links(read.home_links, read.home_url, api_key)
@@ -308,7 +337,7 @@ class GenericEventSpider(scrapy.Spider):
             run.complete = False
         if result.strategy == 'ai' and len(result.events) >= 2 and not recipe.get('item_css'):
             learned = recipe_extractor.learn(response, [d for d, _ in result.events],
-                                             self.settings.get('ANTHROPIC_API_KEY', ''))
+                                             self.config.api_key)
             if learned:
                 self.tracker.learn(run, 'ai', **learned)
 
@@ -329,7 +358,7 @@ class GenericEventSpider(scrapy.Spider):
                 yield self._detail_request(url, meta, run, response.url, refetch=refetch)
 
         if found.next_page:
-            if run.scheduled_listings < self.settings.getint('GENERIC_MAX_LISTING_PAGES', 15):
+            if run.scheduled_listings < self.config.max_listing_pages:
                 yield self._listing_request(found.next_page, meta, run)
             else:
                 run.complete = False
@@ -346,7 +375,7 @@ class GenericEventSpider(scrapy.Spider):
             reason = follow.detail_reason(data) if detail_url else None
             if reason and follow.may_follow(
                     reason, budget=self._detail_budget(run), detail_useful=meta[RECIPE].get('detail_useful'),
-                    reserve=self.settings.getint('GENERIC_DETAIL_RESERVE', 15), soft_scheduled=run.soft_scheduled):
+                    reserve=self.config.detail_reserve, soft_scheduled=run.soft_scheduled):
                 run.soft_scheduled += reason == 'soft'
                 yield self._detail_request(detail_url, meta, run, response.url, partial=data,
                                            detail_reason=reason, refetch=refetch)
@@ -362,7 +391,7 @@ class GenericEventSpider(scrapy.Spider):
         reason = page_state.refetch_reason(
             record, version=extraction.EXTRACTION_VERSION, listing=listing,
             lastmod=run.lastmod.get(sitemap.key(url)),
-            max_age=timedelta(days=self.settings.getfloat('PAGE_MAX_AGE_DAYS', 7)))
+            max_age=self.config.page_max_age)
         if record:
             run.pages.update(url, 'detail', last_listed_at=now_iso())
         if reason is None:
@@ -387,7 +416,7 @@ class GenericEventSpider(scrapy.Spider):
                                        partial=record.get('listing_data'), refetch=refetch)
 
     def _detail_budget(self, run: SourceRun) -> int:
-        return max(0, self.settings.getint('GENERIC_MAX_DETAIL_PAGES', 60) - run.scheduled_details)
+        return max(0, self.config.max_detail_pages - run.scheduled_details)
 
     # ── Platforms ─────────────────────────────────────────────────────────────
 
@@ -399,7 +428,7 @@ class GenericEventSpider(scrapy.Spider):
         if adapter.rerender_only:
             if response.meta.get('playwright') or response.meta.get(RENDER_FAILED):
                 return False            # already rendered (or tried) — carry on normally
-            if not self.settings.getbool('PLAYWRIGHT_ENABLED'):
+            if not self.config.render:
                 message = f'needs_js ({adapter.name}): {response.url}'
                 if message not in run.errors:
                     run.errors.append(message)
@@ -442,7 +471,7 @@ class GenericEventSpider(scrapy.Spider):
             self.snapshots.consider(self, response, result, finals, kind='listing', platform=adapter.name)
         yield from self._emit_listing_events(finals, response, meta, run)
         next_url = adapter.next_url(response)
-        if next_url and run.scheduled_listings < self.settings.getint('GENERIC_MAX_LISTING_PAGES', 15):
+        if next_url and run.scheduled_listings < self.config.max_listing_pages:
             yield self._platform_request(next_url, adapter, meta, run)
         elif next_url:
             run.complete = False
@@ -500,7 +529,7 @@ class GenericEventSpider(scrapy.Spider):
 
     def _ai_extractor(self, response):
         """The AI callable for extract_page, or None when AI is disabled."""
-        api_key = self.settings.get('ANTHROPIC_API_KEY', '')
+        api_key = self.config.api_key
         if not api_key:
             return None
         from scraper.extractors import ai

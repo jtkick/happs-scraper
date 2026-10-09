@@ -18,8 +18,7 @@ HOME = 'https://venue.test/'
 
 def make_spider(**settings):
     spider = GenericEventSpider()
-    spider.settings = Settings({'ANTHROPIC_API_KEY': '', 'GENERIC_MAX_DETAIL_PAGES': 60,
-                                'GENERIC_MAX_LISTING_PAGES': 15, **settings})
+    spider.settings = Settings({'ANTHROPIC_API_KEY': '', **settings})
     return spider
 
 
@@ -54,6 +53,13 @@ def split(output):
 @pytest.fixture
 def spider():
     return make_spider()
+
+
+def test_config_defaults_come_from_the_settings_module():
+    from scraper import settings as project
+    config = make_spider(GENERIC_DETAIL_RESERVE=3, PAGE_MAX_AGE_DAYS='0.5').config
+    assert config.max_detail_pages == project.GENERIC_MAX_DETAIL_PAGES and config.detail_reserve == 3
+    assert config.page_max_age.total_seconds() == 12 * 3600 and config.api_key == ''
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

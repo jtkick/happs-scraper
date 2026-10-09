@@ -28,7 +28,7 @@ CONCURRENT_REQUESTS_PER_DOMAIN = 1      # never hammer a single site
 
 # ── Headers ───────────────────────────────────────────────────────────────────
 
-# Rotated per-request by ConditionalFetchMiddleware; this is the default.
+# Rotated per-request by RotatingUserAgentMiddleware; this is the default.
 USER_AGENT = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
     'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -94,8 +94,8 @@ ITEM_PIPELINES = {
 HAPPS_API_BASE    = os.getenv('HAPPS_API_BASE', 'http://triangulum.cc:46695/api/')
 HAPPS_SCRAPER_TOKEN = os.getenv('HAPPS_SCRAPER_TOKEN', '')
 
+# AI extraction and discovery run only when this is set.
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-AI_EXTRACTION_ENABLED = bool(ANTHROPIC_API_KEY)
 
 # A detail page nothing says has changed (scraper/page_state.py) is still
 # refetched once it's this old, in case the change didn't show anywhere else.
