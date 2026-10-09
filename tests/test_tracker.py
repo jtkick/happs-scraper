@@ -190,7 +190,7 @@ def test_detail_page_items_are_attributed_to_their_listing():
 
 
 def test_detail_usefulness_is_learned_after_enough_soft_follows():
-    from scraper.sources.tracker import DETAIL_SAMPLE_MIN
+    from scraper.follow import DETAIL_SAMPLE_MIN
     client = FakeClient()
     tracker = RunTracker(client)
     run = tracker.start(dict(SOURCE))

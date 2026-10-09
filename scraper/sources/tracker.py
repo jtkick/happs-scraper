@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from scraper import follow
 from scraper.discovery.sitemap import SitemapRead
 from scraper.page_state import PageState
 
@@ -24,10 +25,6 @@ _NOT_A_LOSS = {'duplicate_in_run'}
 MAX_DROPPED = 50
 # A relearned recipe must find this share of the baseline to replace the old one.
 RELEARN_ACCEPT = 0.8
-# Detail pages followed only in hope of more ("soft"): after this many in a run,
-# the recipe learns whether they help — at least this share must add something.
-DETAIL_SAMPLE_MIN = 5
-DETAIL_USEFUL_SHARE = 0.3
 
 
 @dataclass
@@ -188,8 +185,8 @@ class RunTracker:
         run.learned_origin = run.learned_origin or origin
 
     def _learn_detail_usefulness(self, run: SourceRun):
-        if run.soft_details >= DETAIL_SAMPLE_MIN:
-            useful = run.soft_details_useful >= DETAIL_USEFUL_SHARE * run.soft_details
+        useful = follow.judge_useful(run.soft_details, run.soft_details_useful)
+        if useful is not None:
             self.learn(run, 'heuristic', detail_useful=useful)
 
     # ── Flush ─────────────────────────────────────────────────────────────────

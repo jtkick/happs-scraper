@@ -62,3 +62,16 @@ def test_details_of_a_listing():
     state = PageState([{'url': 'a', 'kind': 'detail', 'listing_url': 'L'},
                        {'url': 'b', 'kind': 'detail', 'listing_url': 'M'}, {'url': 'L', 'kind': 'listing'}])
     assert [p['url'] for p in state.details_of('L')] == ['a']
+
+
+def test_lastmod_missed_change():
+    fetched = datetime(2026, 10, 5, tzinfo=timezone.utc)
+    record = {'fetched_at': fetched.isoformat(), 'extraction_version': 1, 'content_hash': 'old'}
+    before, after = fetched - timedelta(days=1), fetched + timedelta(days=1)
+    missed = lambda **kw: page_state.lastmod_missed_change(  # noqa: E731
+        record, **{'content_hash': 'new', 'lastmod': before, 'version': 1, **kw})
+    assert missed()
+    assert not missed(content_hash='old')               # unchanged
+    assert not missed(lastmod=after)                     # the sitemap did say so
+    assert not missed(version=2)                         # our parser changed, not the page
+    assert not missed(lastmod=None)

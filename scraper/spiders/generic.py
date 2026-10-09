@@ -44,7 +44,7 @@ from scrapy import signals
 from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from scrapy.spidermiddlewares.httperror import HttpError
 
-from scraper import extraction, page_state, platforms
+from scraper import extraction, follow, page_state, platforms
 from scraper.discovery import links as link_classifier, sitemap
 from scraper.discovery.events_page import (
     events_urls_from_sitemap, find_events_pages, page_links, same_site, site_of,
@@ -55,14 +55,12 @@ from scraper.platforms.base import Platform
 from scraper.rendering import raw_retry, render_meta, rendered_after_check
 from scraper.snapshots import SnapshotSampler
 from scraper.sources.client import BackendClient
-from scraper.sources.tracker import DETAIL_SAMPLE_MIN, RunTracker, SourceRun
+from scraper.sources.tracker import RunTracker, SourceRun
 
 logger = logging.getLogger(__name__)
 
 # Stages whose pages are HTML, and so are rendered when Playwright is on.
 _RENDERED_STAGES = ('home', 'listing', 'detail')
-# A listing description shorter than this that doesn't end a sentence is probably a teaser.
-_TEASER_CHARS = 300
 
 
 class GenericEventSpider(scrapy.Spider):
@@ -332,15 +330,17 @@ class GenericEventSpider(scrapy.Spider):
 
     def _emit_listing_events(self, events, response, meta, run):
         for data in events:
-            detail_url = self._detail_url(data, response)
+            detail_url = follow.detail_url(data, response.url)
             refetch = None
             if detail_url:
                 refetch = self._refetch_reason(detail_url, run, response.url,
                                                listing=page_state.listing_hash(data))
                 if refetch is None:
                     continue
-            reason = self._detail_reason(data) if detail_url else None
-            if reason and self._may_follow(reason, run, meta['recipe']):
+            reason = follow.detail_reason(data) if detail_url else None
+            if reason and follow.may_follow(
+                    reason, budget=self._detail_budget(run), detail_useful=meta['recipe'].get('detail_useful'),
+                    reserve=self.settings.getint('GENERIC_DETAIL_RESERVE', 15), soft_scheduled=run.soft_scheduled):
                 run.soft_scheduled += reason == 'soft'
                 yield self._detail_request(detail_url, meta, run, response.url, partial=data,
                                            detail_reason=reason, refetch=refetch)
@@ -379,37 +379,6 @@ class GenericEventSpider(scrapy.Spider):
                 return
             yield self._detail_request(record['url'], meta, run, request.url,
                                        partial=record.get('listing_data'), refetch=refetch)
-
-    @staticmethod
-    def _detail_reason(data: dict) -> Optional[str]:
-        """'required' when the listing lacks what an event needs, 'soft' when its page probably says more."""
-        if not (data.get('start_datetime') and data.get('description')):
-            return 'required'
-        if (_looks_cut_off(data['description'])
-                or not (data.get('location_address') or data.get('location_lat') is not None)
-                or not data.get('end_datetime')
-                or _unexplained_span(data)):
-            return 'soft'
-        return None
-
-    def _may_follow(self, reason: str, run: SourceRun, recipe: dict) -> bool:
-        budget = self._detail_budget(run)
-        if reason == 'required':
-            return budget > 0
-        if budget <= self.settings.getint('GENERIC_DETAIL_RESERVE', 15):
-            return False
-        # Detail pages haven't helped this site: keep sampling a few so that can change.
-        return recipe.get('detail_useful') is not False or run.soft_scheduled < DETAIL_SAMPLE_MIN
-
-    @staticmethod
-    def _detail_url(data: dict, response) -> Optional[str]:
-        url = data.get('url')
-        if not url:
-            return None
-        url = response.urljoin(url)
-        if url.rstrip('/') == response.url.rstrip('/') or not same_site(url, response.url):
-            return None
-        return url
 
     def _detail_budget(self, run: SourceRun) -> int:
         return max(0, self.settings.getint('GENERIC_MAX_DETAIL_PAGES', 60) - run.scheduled_details)
@@ -507,12 +476,9 @@ class GenericEventSpider(scrapy.Spider):
             return
         partial = response.meta.get('partial')
         new_hash = page_state.content_hash(events)
-        old = run.pages.get(url) or {}
-        lastmod = run.lastmod.get(sitemap.key(url))
-        fetched = page_state.parse_time(old['fetched_at']) if old.get('fetched_at') else None
-        if (lastmod and fetched and lastmod <= fetched
-                and old.get('extraction_version') == extraction.EXTRACTION_VERSION
-                and old.get('content_hash') and old['content_hash'] != new_hash):
+        if page_state.lastmod_missed_change(run.pages.get(url), content_hash=new_hash,
+                                            lastmod=run.lastmod.get(sitemap.key(url)),
+                                            version=extraction.EXTRACTION_VERSION):
             logger.info("%s changed but its sitemap lastmod didn't; not trusting lastmod", url)
             self.tracker.learn(run, 'heuristic', lastmod_trusted=False)
         now = _now()
@@ -605,19 +571,3 @@ class GenericEventSpider(scrapy.Spider):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _looks_cut_off(description: str) -> bool:
-    text = description.rstrip()
-    if text.endswith(('…', '...')):
-        return True
-    return len(text) < _TEASER_CHARS and not text.endswith(('.', '!', '?', '"', '”', ')'))
-
-
-def _unexplained_span(data: dict) -> bool:
-    """Days between start and end, and nothing saying which of them it happens on."""
-    if data.get('recurrence_freq') not in (None, 'none') or data.get('rdates'):
-        return False
-    start = extraction.parse_iso(data.get('start_datetime'))
-    end = extraction.parse_iso(data.get('end_datetime'))
-    return bool(start and end and (end.date() - start.date()).days > 1)

@@ -260,24 +260,6 @@ def test_failed_detail_page_still_emits_the_partial(spider):
     assert spider.tracker.for_request(detail).complete is False
 
 
-@pytest.mark.parametrize('extra, reason', [
-    ({}, None),
-    ({'description': None}, 'required'),
-    ({'start_datetime': None}, 'required'),
-    ({'description': 'An evening of jazz from the trio, with…'}, 'soft'),
-    ({'description': 'Live jazz'}, 'soft'),
-    ({'location_address': None}, 'soft'),
-    ({'location_address': None, 'location_lat': 39.1}, None),
-    ({'end_datetime': None}, 'soft'),
-    ({'end_datetime': '2026-10-31'}, 'soft'),
-    ({'end_datetime': '2026-10-31', 'recurrence_freq': 'daily'}, None),
-])
-def test_detail_reason(extra, reason):
-    data = {'title': 'Jazz', 'start_datetime': '2026-10-01T19:00', 'end_datetime': '2026-10-01T22:00',
-            'description': 'Live jazz.', 'location_address': '1 Main St', **extra}
-    assert GenericEventSpider._detail_reason(data) == reason
-
-
 def soft_listing(n):
     return html(ld(*[(f'Show {i}', '2026-06-05T19:00', {'description': 'Live jazz.', 'url': f'/e/{i}'})
                      for i in range(n)]))
@@ -295,7 +277,7 @@ def test_soft_follows_leave_the_reserve_for_required_ones():
 
 
 def test_unhelpful_detail_pages_are_only_sampled(spider):
-    from scraper.sources.tracker import DETAIL_SAMPLE_MIN
+    from scraper.follow import DETAIL_SAMPLE_MIN
     [request] = spider.entry_requests(source(effective_recipe={
         'events_urls': ['https://venue.test/events'], 'detail_useful': False}))
     items, requests = split(spider.parse_listing(respond(request, soft_listing(DETAIL_SAMPLE_MIN + 3))))

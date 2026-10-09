@@ -10,7 +10,8 @@ worker can pick up where the last one left off.
                  a hash of what they parsed to (content_hash), the fingerprints they
                  produced, when they were fetched, and with which EXTRACTION_VERSION
 
-refetch_reason() decides whether a detail page has to be fetched again.
+refetch_reason() decides whether a detail page has to be fetched again;
+lastmod_missed_change() whether its sitemap's lastmod can be trusted.
 """
 from __future__ import annotations
 import hashlib
@@ -69,6 +70,19 @@ def refetch_reason(record: Optional[dict], *, version: int, max_age: timedelta,
     if listing is None and lastmod is None:
         return 'no_signal'
     return None
+
+
+def lastmod_missed_change(record: Optional[dict], *, content_hash: str, lastmod: Optional[datetime],
+                          version: int) -> bool:
+    """
+    The page parses differently now (same EXTRACTION_VERSION, so the page
+    itself changed), yet its sitemap lastmod is no later than our last fetch.
+    """
+    if not record or not lastmod or not record.get('content_hash'):
+        return False
+    fetched = parse_time(record['fetched_at']) if record.get('fetched_at') else None
+    return bool(fetched and lastmod <= fetched and record.get('extraction_version') == version
+                and record['content_hash'] != content_hash)
 
 
 def parse_time(value) -> Optional[datetime]:

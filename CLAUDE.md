@@ -10,7 +10,7 @@
 
 ## Authority & Links
 - **Generic spider** (default for all venues): `scraper/spiders/generic.py` — sources come from the backend (`api/scraper/sources/due/`); discovery → listing → detail; learned recipe + run report sent at spider close, or each time a `keep_claiming` batch finishes (idle), after which the run is forgotten
-- Detail pages: followed when the listing lacks start/description (`required`) or the page probably says more (`soft`: cut-off description, no address, no end, unexplained multi-day span); soft follows leave `GENERIC_DETAIL_RESERVE` of the budget and the recipe learns `detail_useful`
+- Detail pages (`scraper/follow.py`): followed when the listing lacks start/description (`required`) or the page probably says more (`soft`: cut-off description, no address, no end, unexplained multi-day span); soft follows leave `GENERIC_DETAIL_RESERVE` of the budget and the recipe learns `detail_useful`
 - Rendering: `scraper/rendering.py` — with `PLAYWRIGHT_ENABLED` every home/listing/detail page is rendered (feeds and sitemaps raw); a failed render is refetched raw; conditional listing checks go raw first and render only if changed (Chromium aborts on 304)
 - Page text: `scraper/text.py` `full_text` = visible DOM text + embedded-JSON text; used for recurrence (strong phrases near the title, single-event pages only) and when trafilatura comes back thin
 - No site-specific spiders: hand-tune a site with a locked recipe override on its backend Source (`override` + `recipe_locked`: `events_urls`, `item_css`, `detail_link_css`, `pagination_css`); events become items via `scraper/items.py` `event_item`
