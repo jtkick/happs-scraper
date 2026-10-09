@@ -5,6 +5,8 @@ Every test passes an explicit `year_hint` or an in-text year so results do not
 drift as the real calendar advances — `_best_year` otherwise resolves bare
 month/day pairs against today's date.
 """
+from datetime import date
+
 import pytest
 
 from scraper.extractors import dates
@@ -146,3 +148,26 @@ def test_returns_none_when_no_dates(text):
 def test_date_list_applies_a_single_shared_time():
     result = dates.extract('Join us June 5, June 12, and June 19 at 7 p.m.', year_hint=YEAR)
     assert result['start_datetime'] == '2026-06-05T19:00:00'
+
+
+# ── Single dates ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('text', [
+    'October 31, 2026', 'Oct. 31, 2026', 'Oct 31st 2026', '31 October 2026',
+    'Saturday, October 31, 2026', '10/31/2026', '10/31/26', '2026-10-31', 'October 31, 2026 at 9pm',
+])
+def test_parse_date_formats(text):
+    assert dates.parse_date(text) == date(2026, 10, 31)
+
+
+def test_parse_date_without_a_year_takes_the_hint():
+    assert dates.parse_date('Oct 31', year_hint=2027) == date(2027, 10, 31)
+
+
+@pytest.mark.parametrize('text', ['9pm', '9:00 p.m.', '10 pm', 'Monday', 'soon', '2/30/2026', ''])
+def test_parse_date_rejects_times_and_non_dates(text):
+    assert dates.parse_date(text) is None
+
+
+def test_range_across_months_is_not_a_date_list():
+    assert dates.extract('Dates: September 30, 2026 - October 31, 2026') is None

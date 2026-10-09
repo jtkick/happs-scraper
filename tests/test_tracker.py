@@ -125,17 +125,9 @@ def test_adhoc_runs_are_not_reported():
     assert client.reports == []
 
 
-def test_unchanged_pages_carry_their_events_and_are_restored():
-    class Store:
-        def __init__(self):
-            self.saved = {}
-
-        def remember_events(self, url, fps):
-            self.saved[url] = set(fps)
-
-    client, store = FakeClient(), Store()
+def test_unchanged_pages_carry_their_events_and_are_reported():
+    client = FakeClient()
     tracker = RunTracker(client)
-    tracker.page_store = store
     run = tracker.start(dict(SOURCE))
     listing_a, listing_b = req(run), Request('https://venue.test/b', meta={'run_key': run.key})
     tracker.not_modified(listing_a, ['old1', 'old2'])
@@ -146,7 +138,44 @@ def test_unchanged_pages_carry_their_events_and_are_restored():
     report = client.reports[0]
     assert report['seen_fingerprints'] == ['new1', 'old1', 'old2']
     assert report['not_modified'] == 1
-    assert store.saved == {'https://venue.test/x': {'old1', 'old2'}, 'https://venue.test/b': {'new1'}}
+    pages = {p['url']: p for p in report['pages']}
+    assert pages['https://venue.test/x']['fingerprints'] == ['old1', 'old2']
+    assert pages['https://venue.test/b']['fingerprints'] == ['new1']
+    assert all(p['kind'] == 'listing' and p['last_listed_at'] for p in pages.values())
+
+
+def test_skipped_detail_pages_carry_their_events():
+    client = FakeClient()
+    tracker = RunTracker(client)
+    run = tracker.start(dict(SOURCE))
+    tracker.carry(run, ['fp-a', 'fp-b'], 'https://venue.test/events')
+    tracker.flush()
+    report = client.reports[0]
+    assert report['skipped_unchanged'] == 1
+    assert report['seen_fingerprints'] == ['fp-a', 'fp-b']
+    [listing] = report['pages']
+    assert listing['fingerprints'] == ['fp-a', 'fp-b']
+
+
+def test_detail_page_fingerprints_are_reported_per_page():
+    client = FakeClient()
+    tracker = RunTracker(client)
+    run = tracker.start(dict(SOURCE))
+    run.pages.update('https://venue.test/e/1', 'detail', content_hash='h', fingerprints=[])
+    detail = type('R', (), {'meta': {'stage': 'detail', 'listing_url': 'https://venue.test/events',
+                                     'page_url': 'https://venue.test/e/1'},
+                            'url': 'https://venue.test/e/1?redirected'})()
+    tracker.item_scraped(item('fp'), detail)
+    tracker.flush()
+    pages = {p['url']: p for p in client.reports[0]['pages']}
+    assert pages['https://venue.test/e/1'] == {'url': 'https://venue.test/e/1', 'kind': 'detail',
+                                               'content_hash': 'h', 'fingerprints': ['fp']}
+
+
+def test_known_pages_load_into_the_run():
+    run = RunTracker().start(dict(SOURCE), pages=[{'url': 'https://venue.test/e/1', 'kind': 'detail'}])
+    assert run.pages.get('https://venue.test/e/1')['kind'] == 'detail'
+    assert run.report()['pages'] == []                   # nothing changed yet
 
 
 def test_detail_page_items_are_attributed_to_their_listing():
@@ -156,3 +185,24 @@ def test_detail_page_items_are_attributed_to_their_listing():
                             'url': 'https://venue.test/events/x'})()
     tracker.item_scraped(item('fp'), detail)
     assert run.page_fps == {'https://venue.test/events': {'fp'}}
+
+
+def test_detail_usefulness_is_learned_after_enough_soft_follows():
+    from scraper.sources.tracker import DETAIL_SAMPLE_MIN
+    client = FakeClient()
+    tracker = RunTracker(client)
+    run = tracker.start(dict(SOURCE))
+    for i in range(DETAIL_SAMPLE_MIN):
+        tracker.soft_detail_parsed(req(run, 'detail'), useful=False)
+    tracker.flush()
+    [(_, update)] = client.updates
+    assert update['recipe']['detail_useful'] is False
+
+
+def test_too_few_soft_follows_learn_nothing():
+    client = FakeClient()
+    tracker = RunTracker(client)
+    run = tracker.start(dict(SOURCE))
+    tracker.soft_detail_parsed(req(run, 'detail'), useful=True)
+    tracker.flush()
+    assert client.updates == []

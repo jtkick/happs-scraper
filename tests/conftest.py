@@ -1,45 +1,8 @@
-"""Shared pytest helpers and fixture corpus loader."""
+"""Shared pytest helpers."""
 from __future__ import annotations
-import json
 import os
-from pathlib import Path
 
 import pytest
-
-FIXTURES_DIR = Path(__file__).parent / 'fixtures'
-
-
-def load_fixtures() -> list[dict]:
-    """
-    Walk tests/fixtures/ and return one dict per fixture directory.
-
-    Each dict has:
-      id          — directory name (used as the test ID)
-      url         — source URL from fixture.json
-      data        — parsed fixture.json contents
-      html        — raw HTML string, or None if page.html is absent
-      clean_text  — trafilatura-extracted text, or None if clean_text.txt is absent
-    """
-    fixtures = []
-    if not FIXTURES_DIR.exists():
-        return fixtures
-    for fixture_dir in sorted(FIXTURES_DIR.iterdir()):
-        if not fixture_dir.is_dir():
-            continue
-        meta_path = fixture_dir / 'fixture.json'
-        if not meta_path.exists():
-            continue
-        data = json.loads(meta_path.read_text())
-        html_path = fixture_dir / 'page.html'
-        text_path = fixture_dir / 'clean_text.txt'
-        fixtures.append({
-            'id':         fixture_dir.name,
-            'url':        data.get('url', 'https://example.com/'),
-            'data':       data,
-            'html':       html_path.read_text()  if html_path.exists()  else None,
-            'clean_text': text_path.read_text()  if text_path.exists()  else None,
-        })
-    return fixtures
 
 
 # ── Pytest hooks ──────────────────────────────────────────────────────────────

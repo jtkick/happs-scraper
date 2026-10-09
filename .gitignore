@@ -10,3 +10,6 @@ venv/
 dist/
 *.egg-info/
 .claude/worktrees/
+
+# Review inbox and sync ledger (tools/review.py); reviewed cases go to tests/fixtures/
+review/

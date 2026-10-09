@@ -4,7 +4,7 @@ Diagnose open missed-event reports (filed in Django admin) and feed the
 fixes back into the crawl.
 
 Usage:
-    python tools/process_reports.py [--save-fixtures] [--dry-run]
+    python tools/process_reports.py [--save-cases] [--dry-run]
 
 For each report URL:
   fetch fails / robots.txt forbids   → blocked
@@ -15,77 +15,33 @@ For each report URL:
                                         it, so its listing page is added to the
                                         source's recipe events_urls
 
---save-fixtures writes tests/fixtures/report-<id>/ so the miss becomes a
-regression test once its expected output is reviewed.
+--save-cases puts each fetched page in review/inbox/report-<id>/ (with the
+dropped events among its starting labels, since someone says they exist) so
+the miss becomes a regression test once it's reviewed in tools/review.py.
 """
 from __future__ import annotations
 import argparse
-import json
 import sys
 from pathlib import Path
-from urllib import robotparser
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import requests
-from scrapy.exceptions import DropItem
-
-from scraper import extraction
 from scraper.discovery.events_page import home_url, site_of
-from scraper.items import EventItem
-from scraper.pipelines import NormalizePipeline, ValidatePipeline
-
-FIXTURES_DIR = Path(__file__).parent.parent / 'tests' / 'fixtures'
+from scraper.eval.capture import FetchError, fetch, labels_from, new_case
+from scraper.eval.case import INBOX_DIR, Case
 
 
-def fetch(url: str, user_agent: str) -> tuple[str | None, str]:
-    robots = robotparser.RobotFileParser(home_url(url) + 'robots.txt')
-    try:
-        robots.read()
-        if not robots.can_fetch(user_agent, url):
-            return None, 'robots.txt disallows this URL'
-    except Exception:
-        pass
-    try:
-        resp = requests.get(url, headers={'User-Agent': user_agent}, timeout=20)
-    except requests.RequestException as exc:
-        return None, str(exc)
-    if not resp.ok:
-        return None, f'HTTP {resp.status_code}'
-    return resp.text, ''
-
-
-def diagnose(url: str, html: str, source: dict | None, settings) -> tuple[str, str, list[dict]]:
-    ai = None
-    if settings.get('ANTHROPIC_API_KEY'):
-        from scraper.extractors import ai as ai_module
-        key = settings.get('ANTHROPIC_API_KEY')
-        ai = lambda h, u: ai_module.extract_many(h, u, key)  # noqa: E731
-    context = (source or {}).get('context') or {}
-    result = extraction.extract_page(html, url, ai=ai)
-    text = extraction.page_text(html) if result.single else None
-    events = [e for e in (extraction.finalize(d, context=context, jsonld_node=n, page_text=text)
-                          for d, n in result.events) if e]
-    if not events:
-        return 'extraction_failed', 'No event could be extracted from the page.', []
-
-    normalize, validate = NormalizePipeline(), ValidatePipeline()
-    reasons = []
-    for data in events:
-        item = EventItem({k: v for k, v in data.items() if k in EventItem.fields})
-        try:
-            validate.process_item(normalize.process_item(item, None), settings_spider(settings))
-            return ('not_discovered',
-                    f"Extracts cleanly ({data.get('extraction_method')}): {data.get('title')} "
-                    f"@ {item.get('start_datetime')}", events)
-        except DropItem as exc:
-            reasons.append(str(exc))
-    return 'validation_dropped', '; '.join(reasons), events
-
-
-def settings_spider(settings):
-    return type('ToolSpider', (), {'settings': settings})()
+def diagnose(case: Case) -> tuple[str, str]:
+    parsed = case.parsed
+    if parsed['events']:
+        e = parsed['events'][0]
+        return ('not_discovered',
+                f"Extracts cleanly ({e.get('extraction_method')}): {e.get('title')} @ {e.get('start_datetime')}")
+    if parsed['dropped']:
+        return 'validation_dropped', '; '.join(
+            f"{e['drop_reason']}: {e.get('title')}" for e in parsed['dropped'])
+    return 'extraction_failed', 'No event could be extracted from the page.'
 
 
 def listing_for(url: str) -> str:
@@ -95,25 +51,18 @@ def listing_for(url: str) -> str:
     return f'{parsed.scheme}://{parsed.netloc}{parent}'
 
 
-def save_fixture(report: dict, url: str, html: str, events: list[dict]):
-    target = FIXTURES_DIR / f"report-{report['id'][:8]}"
-    target.mkdir(parents=True, exist_ok=True)
-    (target / 'page.html').write_text(html)
-    (target / 'clean_text.txt').write_text(extraction.page_text(html) or '')
-    fields = ('title', 'start_datetime', 'end_datetime', 'location_title', 'url')
-    (target / 'fixture.json').write_text(json.dumps({
-        'url': url,
-        'notes': f"Missed-event report {report['id']}: {report.get('notes', '')} "
-                 '— REVIEW expected values before relying on this fixture.',
-        'reviewed': False,
-        'expected_events': [{k: e.get(k) for k in fields} for e in events],
-    }, indent=2, default=str))
-    return target
+def report_case(report: dict, url: str, html: str, source: dict | None, api_key: str) -> Case:
+    case = new_case(url, html, kind='detail', seed_context=(source or {}).get('context') or {},
+                    source='report', source_ref=report['id'], notes=report.get('notes', ''),
+                    ai='live', api_key=api_key, case_id=f"report-{report['id'][-8:]}")
+    case.events += [labels_from(e) for e in case.parsed['dropped']]
+    return case
 
 
 def main():
     parser = argparse.ArgumentParser(description='Diagnose missed-event reports')
-    parser.add_argument('--save-fixtures', action='store_true')
+    parser.add_argument('--save-cases', action='store_true',
+                        help='save each page to review/inbox/ for tools/review.py')
     parser.add_argument('--dry-run', action='store_true', help='print diagnoses, change nothing')
     args = parser.parse_args()
 
@@ -132,11 +81,14 @@ def main():
             client.upsert_sources([{'domain': site_of(url), 'homepage_url': home_url(url)}])
             source = client.source_by_domain(site_of(url))
 
-        html, error = fetch(url, user_agent)
-        if html is None:
-            diagnosis, detail, events = 'blocked', error, []
+        case = None
+        try:
+            html = fetch(url, user_agent=user_agent)
+        except FetchError as exc:
+            diagnosis, detail = 'blocked', str(exc)
         else:
-            diagnosis, detail, events = diagnose(url, html, source, settings)
+            case = report_case(report, url, html, source, settings.get('ANTHROPIC_API_KEY', ''))
+            diagnosis, detail = diagnose(case)
         print(f'  {url}\n    → {diagnosis}: {detail}')
         if args.dry_run:
             continue
@@ -154,8 +106,9 @@ def main():
                 client.update_source(source['id'], {'relearn_requested': True})
                 detail += ' — relearn requested'
 
-        if args.save_fixtures and html:
-            detail += f' — fixture {save_fixture(report, url, html, events).name}'
+        if args.save_cases and case:
+            case.save(INBOX_DIR / case.id)
+            detail += f' — case {case.id}'
         client.update_report(report['id'], {
             'status': 'diagnosed', 'diagnosis': diagnosis, 'diagnosis_detail': detail,
             'source': source['id'] if source else None,

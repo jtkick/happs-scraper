@@ -156,3 +156,63 @@ def test_signature_ignores_the_occurrence_date():
 ])
 def test_written_ordinal_weekday_of_month(phrase, expected):
     assert recurrence.extract('Event', phrase)['recurrence_byday'] == [expected]
+
+
+# ── Until / count / day lists ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize('text, freq, byday, until', [
+    ('Recurring daily until October 31, 2026', 'daily', [], '2026-10-31'),
+    ('Recurring weekly on Monday', 'weekly', ['MO'], None),
+    ('Recurring weekly on Monday, Wednesday, Thursday, Friday until October 30, 2026',
+     'weekly', ['MO', 'WE', 'TH', 'FR'], '2026-10-30'),
+    ('Recurring weekly on Sunday, Monday, Tuesday, Wednesday, Thursday until November 22, 2026',
+     'weekly', ['SU', 'MO', 'TU', 'WE', 'TH'], '2026-11-22'),
+    ('Every Thursday through Dec. 18, 2026', 'weekly', ['TH'], '2026-12-18'),
+    ('Every Friday, 5-9pm, until 10/31/2026', 'weekly', ['FR'], '2026-10-31'),
+    ('Tuesdays & Thursdays every week', None, None, None),
+    ('Every Tues and Thurs', 'weekly', ['TU', 'TH'], None),
+])
+def test_recurrence_phrases_with_until(text, freq, byday, until):
+    result = _text(text)
+    if freq is None:
+        assert result is None
+        return
+    assert result['recurrence_freq'] == freq
+    assert result['recurrence_byday'] == byday
+    assert result['recurrence_until'] == until
+
+
+@pytest.mark.parametrize('text', ['Open daily until 9pm', 'Every Thursday at 8. Tickets on sale until Nov 1, 2026'])
+def test_until_must_be_a_date_in_the_same_sentence(text):
+    assert _text(text)['recurrence_until'] is None
+
+
+def test_for_n_weeks_is_a_count():
+    result = _text('Every Tuesday for 6 weeks')
+    assert result['recurrence_count'] == 6 and result['recurrence_until'] is None
+
+
+def test_every_other_year():
+    result = _text('Lights up the city for 4 days every other year')
+    assert (result['recurrence_freq'], result['recurrence_interval']) == ('yearly', 2)
+
+
+def test_schedule_text_beats_description():
+    result = recurrence.extract('Show', 'A weekly favourite', schedule_text='Recurring daily')
+    assert result['recurrence_freq'] == 'daily'
+
+
+# ── Page text ─────────────────────────────────────────────────────────────────
+
+def test_page_text_takes_only_strong_phrases():
+    page = 'Trivia Night\nDaily specials at the bar. Our weekly newsletter.'
+    assert recurrence.extract('Trivia Night', '', page_text=page) is None
+    page = 'Trivia Night\nRecurring weekly on Tuesday until December 1, 2026'
+    result = recurrence.extract('Trivia Night', '', page_text=page)
+    assert result['recurrence_byday'] == ['TU'] and result['recurrence_until'] == '2026-12-01'
+
+
+def test_page_text_starts_at_the_title():
+    page = 'Sidebar: Brunch, recurring daily\nTrivia Night\nOctober 6\n' + 'x' * recurrence.PAGE_WINDOW + \
+           '\nRelated: Karaoke every Friday'
+    assert recurrence.extract('Trivia Night', '', page_text=page) is None

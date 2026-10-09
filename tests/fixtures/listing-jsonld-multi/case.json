@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "url": "https://venue.example/whats-on/",
+  "kind": "listing",
+  "captured_at": "2026-09-15T12:00:00+00:00",
+  "source": "manual",
+  "seed_context": {
+    "location_title": "The Rusty Tap",
+    "timezone": "America/New_York"
+  },
+  "events": [
+    {
+      "title": "Jazz Night",
+      "start_datetime": "2026-10-01T19:00:00-04:00",
+      "location_title": "The Rusty Tap"
+    },
+    {
+      "title": "Pub Quiz",
+      "start_datetime": "2026-10-02T20:00:00-04:00"
+    },
+    {
+      "title": "Karaoke Party",
+      "start_datetime": "2026-10-04T21:00:00-04:00",
+      "description": null
+    }
+  ],
+  "complete": true,
+  "notes": "Synthetic listing: every JSON-LD event must be extracted, with seed venue context filling location."
+}

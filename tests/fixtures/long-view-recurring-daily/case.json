@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "url": "https://www.visitcincy.com/event/2026-biennial%3a-the-long-view/19581/",
+  "kind": "detail",
+  "captured_at": "2026-10-05T23:10:55+00:00",
+  "source": "manual",
+  "seed_context": {
+    "timezone": "America/New_York"
+  },
+  "events": [
+    {
+      "title": "2026 Biennial: The Long View",
+      "start_datetime": "2026-09-30T04:00:00+00:00",
+      "end_datetime": null,
+      "recurrence_freq": "daily",
+      "recurrence_byday": null,
+      "recurrence_until": "2026-10-31",
+      "rdates": null,
+      "location_address": "228 E. Liberty St., Cincinnati, OH, 45202",
+      "location_lat": 39.1128621,
+      "location_lon": -84.5111822,
+      "ticket_url": "https://www.fotofocus.org/events/?event_cat=178"
+    }
+  ],
+  "complete": true,
+  "notes": "Rendered Simpleview detail page. \"Recurring daily\" (inline JSON and the page) over \"September 30, 2026 - October 31, 2026\": daily until Oct 31, no month-long end, no rdates. Labelled by Claude from the page.",
+  "reviewed_at": "2026-10-05T23:11:46+00:00"
+}

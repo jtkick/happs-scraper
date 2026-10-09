@@ -166,6 +166,14 @@ def test_recurrence_defaults_applied(normalize):
     assert result['recurrence_month_mode'] == 'day'
 
 
+def test_recurrence_defaults_replace_none(normalize):
+    # build_item sets every field, so a one-off event arrives with recurrence_freq=None;
+    # left as None, ValidatePipeline treated it as recurring and never dropped it as past.
+    result = normalize.process_item(_item(recurrence_freq=None, recurrence_byday=None), None)
+    assert result['recurrence_freq'] == 'none'
+    assert result['recurrence_byday'] == []
+
+
 def test_existing_recurrence_values_are_kept(normalize):
     result = normalize.process_item(
         _item(recurrence_freq='weekly', recurrence_byday=['TH']), None)

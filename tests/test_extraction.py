@@ -130,3 +130,76 @@ def test_page_text_dates_only_apply_when_given():
     detail = extraction.finalize({'title': 'Show', 'start_datetime': '2026-07-01'}, page_text=text)
     assert not listing.get('rdates')
     assert detail.get('rdates')
+
+
+# ── Recurrence over a date span ───────────────────────────────────────────────
+
+def test_recurring_run_becomes_until_and_first_day():
+    data = extraction.finalize({'title': 'Biennial', 'start_datetime': '2026-09-30',
+                                'end_datetime': '2026-10-31', '_schedule_text': 'Recurring daily'})
+    assert data['recurrence_freq'] == 'daily'
+    assert data['recurrence_until'] == '2026-10-31'
+    assert data['end_datetime'] is None
+
+
+def test_timed_run_keeps_the_end_time_on_the_first_day():
+    data = extraction.finalize({'title': 'Exhibit', 'description': 'Open every Saturday.',
+                                'start_datetime': '2026-09-05T10:00:00-04:00',
+                                'end_datetime': '2026-12-19T17:00:00-04:00'})
+    assert data['recurrence_until'] == '2026-12-19'
+    assert data['end_datetime'] == '2026-09-05T17:00:00-04:00'
+
+
+def test_span_is_left_alone_when_until_is_elsewhere():
+    data = extraction.finalize({'title': 'Exhibit', 'description': 'Every Saturday until Nov 1, 2026.',
+                                'start_datetime': '2026-09-05', 'end_datetime': '2026-12-19'})
+    assert data['recurrence_until'] == '2026-11-01'
+    assert data['end_datetime'] == '2026-12-19'
+
+
+def test_one_off_spans_are_untouched():
+    data = extraction.finalize({'title': 'Festival', 'start_datetime': '2026-10-08',
+                                'end_datetime': '2026-10-11'})
+    assert not data.get('recurrence_freq') and data['end_datetime'] == '2026-10-11'
+
+
+def test_detail_page_recurrence_is_read_from_its_full_text():
+    page = ld_page(ev('Trivia Night', '2026-10-06T19:00')).replace(
+        '<body></body>', '<body><h1>Trivia Night</h1><ul><li>Recurring weekly on Tuesday</li></ul></body>')
+    [data] = extraction.finalize_page(extraction.extract_page(page, URL), page)
+    assert data['recurrence_freq'] == 'weekly' and data['recurrence_byday'] == ['TU']
+
+
+def test_listing_pages_ignore_page_text_for_recurrence():
+    page = ld_page(ev('A', '2026-10-06'), ev('B', '2026-10-07')).replace(
+        '<body></body>', '<body><p>A</p><p>Recurring daily until October 31, 2026</p></body>')
+    events = extraction.finalize_page(extraction.extract_page(page, URL), page)
+    assert not any(e.get('recurrence_freq') for e in events)
+
+
+# ── Detail pages adding information ───────────────────────────────────────────
+
+def test_added_info():
+    partial = {'title': 'Jazz', 'start_datetime': '2026-06-05', 'description': 'Live jazz…',
+               'tag_names': [], 'extraction_method': 'jsonld'}
+    same = {**partial, 'extraction_method': 'waterfall', 'tag_names': ['Music'], 'timezone': 'X'}
+    assert not extraction.added_info(partial, same)
+    assert extraction.added_info(partial, {**partial, 'location_address': '1 Main St'})
+    assert extraction.added_info(partial, {**partial, 'description': 'Live jazz' + ' and more' * 10})
+    assert extraction.added_info(partial, {**partial, 'recurrence_freq': 'weekly'})
+    assert not extraction.added_info(partial, {**partial, 'recurrence_freq': 'none'})
+    assert extraction.added_info({**partial, 'end_datetime': '2026-06-05'},
+                                 {**partial, 'end_datetime': '2026-06-05T22:00'})
+
+
+def test_thin_main_text_falls_back_to_all_text():
+    shell = '<html><body><p>Loading</p><script>var data = {"recurrence": "Recurring daily", ' \
+            '"name": "Show"}</script></body></html>'
+    assert 'Recurring daily' in extraction.page_text(shell)
+
+
+def test_span_shorter_than_the_repeat_is_one_occurrence():
+    data = extraction.finalize({'title': 'BLINK', 'description': 'Four days of light, every other year.',
+                                'start_datetime': '2026-10-08', 'end_datetime': '2026-10-11'})
+    assert data['recurrence_freq'] == 'yearly' and data['recurrence_interval'] == 2
+    assert data['end_datetime'] == '2026-10-11' and not data.get('recurrence_until')

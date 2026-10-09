@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+.claude
+.scrapy
+review
+dataset
+tests
+**/__pycache__
+*.db

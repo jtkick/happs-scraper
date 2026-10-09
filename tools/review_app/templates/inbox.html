@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% block topbar %}
+  <nav class="tabs">
+    <a href="/?where=inbox" class="{{ 'on' if where == 'inbox' }}">Inbox <span class="count">{{ counts.inbox }}</span></a>
+    <a href="/?where=fixtures" class="{{ 'on' if where == 'fixtures' }}">Fixtures <span class="count">{{ counts.fixtures }}</span></a>
+  </nav>
+  <span class="spacer"></span>
+  <button id="sync" class="btn" title="Pull crawl snapshots, admin corrections and missed-event reports from the backend">Sync from backend</button>
+  <a class="btn primary" href="/new">Capture a page</a>
+{% endblock %}
+{% block content %}
+<main class="list">
+  {% if not rows %}
+    <p class="empty">
+      {% if where == 'inbox' %}Nothing to review. <a href="/new">Capture a page</a> or sync from the backend.
+      {% else %}No fixtures yet — promote a case from the inbox.{% endif %}
+    </p>
+  {% else %}
+  <table>
+    <thead><tr>
+      <th>Case</th><th>Source</th><th>Kind</th><th>Strategy</th>
+      <th class="num">Parsed</th><th class="num">Dropped</th><th class="num">Labelled</th>
+      <th class="num">Recall</th><th class="num">Precision</th><th class="num">Mismatches</th><th>Captured</th>
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr onclick="location.href='/case/{{ r.where }}/{{ r.id }}'">
+        <td><a href="/case/{{ r.where }}/{{ r.id }}">{{ r.id }}</a><div class="sub">{{ r.domain }}</div></td>
+        <td><span class="tag">{{ r.source }}</span></td>
+        <td>{{ r.kind }}</td>
+        <td>{{ r.strategy or '–' }}{% if r.ai %} <span class="tag ai">AI</span>{% endif %}<div class="sub">{{ r.methods }}</div></td>
+        <td class="num">{{ r.parsed }}</td>
+        <td class="num">{{ r.dropped }}</td>
+        <td class="num">{{ r.labelled }}</td>
+        <td class="num">{{ '%.0f%%' % (r.recall * 100) }}</td>
+        <td class="num">{{ '%.0f%%' % (r.precision * 100) }}</td>
+        <td class="num {{ 'bad' if r.failures else 'good' }}">{{ r.failures }}</td>
+        <td>{{ r.captured_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</main>
+<script>
+document.getElementById('sync').onclick = async (e) => {
+  e.target.disabled = true; e.target.textContent = 'Syncing…';
+  const resp = await fetch('/sync', {method: 'POST'});
+  const body = await resp.json();
+  if (!resp.ok) { alert(body.error); e.target.disabled = false; e.target.textContent = 'Sync from backend'; return; }
+  location.href = '/?where=inbox';
+};
+</script>
+{% endblock %}

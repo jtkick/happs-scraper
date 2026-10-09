@@ -72,13 +72,12 @@ class NormalizePipeline:
         if not isinstance(item.get('tag_names'), list):
             item['tag_names'] = []
 
-        # Recurrence defaults
-        item.setdefault('recurrence_freq', 'none')
-        item.setdefault('recurrence_interval', 1)
-        item.setdefault('recurrence_byday', [])
-        item.setdefault('recurrence_month_mode', 'day')
-        item.setdefault('recurrence_until', None)
-        item.setdefault('recurrence_count', None)
+        # Recurrence defaults. Spiders set every field, so an unset one is None, not missing.
+        for key, default in (('recurrence_freq', 'none'), ('recurrence_interval', 1),
+                             ('recurrence_byday', []), ('recurrence_month_mode', 'day'),
+                             ('recurrence_until', None), ('recurrence_count', None)):
+            if item.get(key) is None:
+                item[key] = default
 
         # Normalize rdates: parse each entry as a date string
         raw_rdates = item.get('rdates') or []
@@ -230,6 +229,33 @@ def _iso(value) -> Optional[datetime]:
 
 def _norm(text: str) -> str:
     return FingerprintDedupPipeline._normalize(text)
+
+
+# Item keys that describe the crawl, not the event.
+_BOOKKEEPING = frozenset({'source_url', 'source_id', 'fingerprint', 'ingest_status'})
+
+
+def dry_run(items, spider) -> tuple[list[dict], list[dict]]:
+    """
+    Normalize + Validate without sending anything: (kept, dropped) as plain
+    dicts, each dropped one with its 'drop_reason' code. Used to snapshot a
+    page with the outcome a crawl gives it, and by the review tools.
+    """
+    normalize, validate = NormalizePipeline(), ValidatePipeline()
+    kept, dropped = [], []
+    for item in items:
+        item = item.copy()
+        try:
+            item = validate.process_item(normalize.process_item(item, spider), spider)
+        except DropItem as exc:
+            dropped.append({**_plain(item), 'drop_reason': str(exc).split(':', 1)[0]})
+            continue
+        kept.append(_plain(item))
+    return kept, dropped
+
+
+def _plain(item) -> dict:
+    return {k: v for k, v in dict(item).items() if k not in _BOOKKEEPING and v is not None}
 
 
 # ── 200 · Fingerprint (in-run dedup) ──────────────────────────────────────────

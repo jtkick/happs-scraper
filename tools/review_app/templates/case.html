@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block title %}{{ case.id }} · Scraper review{% endblock %}
+{% block body_class %}case-page{% endblock %}
+{% block topbar %}
+  <a class="crumb" href="/?where={{ where }}">{{ 'Inbox' if where == 'inbox' else 'Fixtures' }}</a>
+  <span class="crumb-sep">/</span>
+  <span class="case-id">{{ case.id }}</span>
+  <a class="url" href="{{ case.url }}" target="_blank" rel="noopener">{{ case.url }}</a>
+  <span class="spacer"></span>
+  <span id="stats" class="stats"></span>
+  <button class="btn" id="rerun" title="Parse again with the code as it is now (replays the recorded AI answer)">Re-run</button>
+  {% if has_ai %}<button class="btn" id="rerun-live" title="Parse again and ask the model afresh (records the new answer)">Re-run with live AI</button>{% endif %}
+  <button class="btn" id="save" disabled title="Ctrl+S">Save</button>
+  {% if where == 'inbox' %}
+    <button class="btn primary" id="promote" title="Save as a fixture in tests/fixtures/">Save as fixture</button>
+    <button class="btn danger" id="discard">Discard</button>
+  {% endif %}
+{% endblock %}
+{% block content %}
+<main class="split">
+  <section class="pane left">
+    <nav class="tabs pane-tabs" id="left-tabs">
+      <button data-tab="page" class="on">Page</button>
+      <button data-tab="text">Text the AI sees</button>
+      <button data-tab="structured">Structured data</button>
+      <button data-tab="html">HTML</button>
+    </nav>
+    <div class="tab-body" data-tab="page">
+      <iframe src="/case/{{ where }}/{{ case.id }}/page" sandbox="allow-same-origin allow-popups" referrerpolicy="no-referrer"></iframe>
+    </div>
+    <div class="tab-body" data-tab="text" hidden><p class="hint sel-hint">Select text, then press ⇐ on a field to copy it in.</p><pre id="page-text" class="text"></pre></div>
+    <div class="tab-body" data-tab="structured" hidden><div id="structured"></div></div>
+    <div class="tab-body" data-tab="html" hidden><pre id="raw-html" class="text code"></pre></div>
+  </section>
+  <section class="pane right" id="editor"><p class="hint">Loading…</p></section>
+</main>
+<script>
+  window.REVIEW = {
+    where: {{ where | tojson }},
+    id: {{ case.id | tojson }},
+    fields: {{ fields | tojson }},
+    rawHtml: {{ case.html | tojson }},
+  };
+</script>
+<script src="/static/review.js"></script>
+{% endblock %}

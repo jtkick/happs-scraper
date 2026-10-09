@@ -1,0 +1,35 @@
+{
+  "strategy": "waterfall",
+  "ai_used": false,
+  "events": [
+    {
+      "extraction_method": "jsonld",
+      "title": "'Recall. Reframe. Respond. The Art of Paul Scott'",
+      "description": "Familiar ceramics, radically reimagined. British artist Paul Scott transforms classic blue-and-white tableware — some antique, some newly made — into bold, thought-provoking works that confront history, human rights, environmental crises and the legacies of empire. Using screenprinting, engraving, collage and inventive reassembly, he breaks, repurposes and reinterprets everyday objects to reveal hidden stories and challenge what we think we know. His \"New American Scenery\" series draws on historic transferware made for American collectors, blending Scott’s experiences traveling across the United States with a contemporary, inclusive perspective. The exhibition engages with the museum’s American art collections, creating a dialogue between past and present and sparking reflection on our shared experiences. Explore Scott’s striking works across the first and second floors, starting in Galleries 125 and 124 near the Terrace Café. Maps, seating, large-print labels, audio guides and accessibility tools ensure every visitor can fully engage with the exhibition. Don’t miss this chance to see everyday objects transformed into powerful, conversation-starting art. Experience Paul Scott’s visionary ceramics in person and discover the stories they reveal.",
+      "start_datetime": "2025-10-10T04:00:00+00:00",
+      "end_datetime": "2026-01-03T05:00:00+00:00",
+      "location_title": "Cincinnati Art Museum",
+      "location_address": "953 Eden Park Dr., Cincinnati, OH, 45202",
+      "location_lat": 39.1145547,
+      "location_lon": -84.49694579999999,
+      "ticket_url": "https://cincinnatiartmuseum.org/art/exhibitions/upcoming-exhibitions/recall-reframe-respond-the-art-of-paul-scott/",
+      "url": "https://www.visitcincy.com/event/recall-reframe-respond-the-art-of-paul-scott/16718/",
+      "image_url": "https://assets.simpleviewinc.com/sv-cincy/image/fetch/c_fill,h_396,q_75,w_704/https://assets.simpleviewinc.com/simpleview/image/upload/crm/cincyregion/Recall.-Reframe.-Respond.-The-Art-of-Paul-Scott_E57E558E-00CD-BDDC-9AFACD184550603C_e580219f-b061-5687-653d2b679907f470.png",
+      "tag_names": [],
+      "recurrence_freq": "none",
+      "recurrence_interval": 1,
+      "recurrence_byday": [],
+      "recurrence_month_mode": "day",
+      "rdates": [
+        "2025-01-03T05:00:00+00:00"
+      ],
+      "exdates": [],
+      "timezone": "America/New_York",
+      "confidence": 1.0,
+      "review_required": false
+    }
+  ],
+  "dropped": [],
+  "ai_missing": false,
+  "ai_stale": false
+}

@@ -134,10 +134,63 @@ def test_render_only_page_without_playwright_is_reported(spider):
 def test_render_only_page_is_rerendered_with_playwright():
     spider = make_spider(PLAYWRIGHT_ENABLED=True)
     [home] = spider.entry_requests(source(status='new'))
+    home = home.replace(meta={k: v for k, v in home.meta.items() if k != 'playwright'})
     body = '<html><head><meta name="generator" content="Wix.com"></head><body></body></html>'
     _, [again] = split(spider.parse_home(respond(home, body)))
     assert again.url == HOME and again.meta['playwright'] and again.callback == spider.parse_home
     assert spider.tracker.for_request(home).learned['render_js'] is True
+
+
+def test_rendered_page_is_not_rendered_again():
+    spider = make_spider(PLAYWRIGHT_ENABLED=True)
+    [home] = spider.entry_requests(source(status='new'))
+    body = '<html><head><meta name="generator" content="Wix.com"></head><body>' \
+           '<a href="/events">Events</a></body></html>'
+    _, requests = split(spider.parse_home(respond(home, body)))
+    assert [r.url for r in requests] == ['https://venue.test/events']
+
+
+# ── Rendering ─────────────────────────────────────────────────────────────────
+
+def test_html_pages_are_rendered_and_feeds_are_not():
+    spider = make_spider(PLAYWRIGHT_ENABLED=True)
+    [home] = spider.entry_requests(source(status='new'))
+    assert home.meta['playwright'] is True
+    _, [sitemap] = split(spider.parse_home(respond(home, html(''))))
+    assert not sitemap.meta.get('playwright')
+    [listing] = spider.entry_requests(source(effective_recipe={'events_urls': ['https://venue.test/events']}))
+    assert listing.meta['playwright'] is True
+    recipe = {'platform': 'ical', 'platform_urls': ['https://venue.test/cal.ics']}
+    [feed] = spider.entry_requests(source(effective_recipe=recipe))
+    assert not feed.meta.get('playwright')
+
+
+def test_nothing_is_rendered_without_playwright(spider):
+    [home] = spider.entry_requests(source(status='new'))
+    assert not home.meta.get('playwright')
+
+
+def _failure(request, exc=ConnectionError('boom')):
+    try:
+        raise exc
+    except type(exc):
+        fail = Failure()
+    fail.request = request
+    return fail
+
+
+def test_failed_render_is_fetched_raw_once():
+    spider = make_spider(PLAYWRIGHT_ENABLED=True)
+    request = listing_request(spider)
+    body = html(ld(('Jazz', '2026-06-05T19:00', {'url': '/events/jazz'})))
+    _, [detail] = split(spider.parse_listing(respond(request, body)))
+    [retry] = list(spider._errback(_failure(detail, TimeoutError('render timed out'))))
+    assert retry.url == detail.url and retry.dont_filter
+    assert not retry.meta.get('playwright') and retry.meta['render_failed']
+    assert retry.meta['partial']['title'] == 'Jazz'
+    assert 'render_failed' in spider.tracker.for_request(detail).errors[0]
+    [item] = list(spider._errback(_failure(retry)))          # raw failed too: keep the partial
+    assert item['title'] == 'Jazz'
 
 
 # ── Listings ──────────────────────────────────────────────────────────────────
@@ -147,9 +200,13 @@ def listing_request(spider, **src):
     return request
 
 
+COMPLETE = {'description': 'Live jazz.', 'endDate': '2026-06-05T22:00',
+            'location': {'@type': 'Place', 'name': 'The Venue', 'address': '1 Main St'}}
+
+
 def test_complete_listing_events_are_emitted_directly(spider):
     request = listing_request(spider)
-    body = html(ld(('Jazz', '2026-06-05T19:00', {'description': 'Live jazz', 'url': '/events/jazz'}),
+    body = html(ld(('Jazz', '2026-06-05T19:00', {**COMPLETE, 'url': '/events/jazz'}),
                    ('Trivia', '2026-06-06T20:00', {'description': 'Quiz'})))
     items, requests = split(spider.parse_listing(respond(request, body)))
     assert [i['title'] for i in items] == ['Jazz', 'Trivia']
@@ -176,14 +233,61 @@ def test_failed_detail_page_still_emits_the_partial(spider):
     body = html(ld(('Jazz', '2026-06-05T19:00', {'url': '/events/jazz'}),
                    ('Blues', '2026-06-07T19:00', {'url': '/events/blues'})))
     _, [detail, _] = split(spider.parse_listing(respond(request, body)))
-    try:
-        raise ConnectionError('boom')
-    except ConnectionError:
-        fail = Failure()
-    fail.request = detail
-    [item] = list(spider._errback(fail))
+    [item] = list(spider._errback(_failure(detail)))
     assert item['title'] == 'Jazz' and item['source_id'] == 'src-1'
     assert spider.tracker.for_request(detail).complete is False
+
+
+@pytest.mark.parametrize('extra, reason', [
+    ({}, None),
+    ({'description': None}, 'required'),
+    ({'start_datetime': None}, 'required'),
+    ({'description': 'An evening of jazz from the trio, with…'}, 'soft'),
+    ({'description': 'Live jazz'}, 'soft'),
+    ({'location_address': None}, 'soft'),
+    ({'location_address': None, 'location_lat': 39.1}, None),
+    ({'end_datetime': None}, 'soft'),
+    ({'end_datetime': '2026-10-31'}, 'soft'),
+    ({'end_datetime': '2026-10-31', 'recurrence_freq': 'daily'}, None),
+])
+def test_detail_reason(extra, reason):
+    data = {'title': 'Jazz', 'start_datetime': '2026-10-01T19:00', 'end_datetime': '2026-10-01T22:00',
+            'description': 'Live jazz.', 'location_address': '1 Main St', **extra}
+    assert GenericEventSpider._detail_reason(data) == reason
+
+
+def soft_listing(n):
+    return html(ld(*[(f'Show {i}', '2026-06-05T19:00', {'description': 'Live jazz.', 'url': f'/e/{i}'})
+                     for i in range(n)]))
+
+
+def test_soft_follows_leave_the_reserve_for_required_ones():
+    spider = make_spider(GENERIC_MAX_DETAIL_PAGES=4, GENERIC_DETAIL_RESERVE=2)
+    request = listing_request(spider)
+    items, requests = split(spider.parse_listing(respond(request, soft_listing(4))))
+    assert len(requests) == 2 and len(items) == 2
+    assert all(r.meta['detail_reason'] == 'soft' for r in requests)
+    body = html(ld(*[(f'Bare {i}', '2026-06-05T19:00', {'url': f'/b/{i}'}) for i in range(3)]))
+    _, required = split(spider.parse_listing(respond(request, body)))
+    assert len(required) == 2 and required[0].meta['detail_reason'] == 'required'
+
+
+def test_unhelpful_detail_pages_are_only_sampled(spider):
+    from scraper.sources.tracker import DETAIL_SAMPLE_MIN
+    [request] = spider.entry_requests(source(effective_recipe={
+        'events_urls': ['https://venue.test/events'], 'detail_useful': False}))
+    items, requests = split(spider.parse_listing(respond(request, soft_listing(DETAIL_SAMPLE_MIN + 3))))
+    assert len(requests) == DETAIL_SAMPLE_MIN and len(items) == 3
+
+
+def test_soft_detail_pages_are_scored(spider):
+    request = listing_request(spider)
+    _, requests = split(spider.parse_listing(respond(request, soft_listing(2))))
+    address = ld(('Show 0', '2026-06-05T19:00', {'location': {'@type': 'Place', 'address': '1 Main St'}}))
+    list(spider.parse_event(respond(requests[0], html(address))))
+    list(spider.parse_event(respond(requests[1], html('<p>nothing</p>'))))
+    run = spider.tracker.for_request(request)
+    assert (run.soft_details, run.soft_details_useful) == (2, 1)
 
 
 def test_listing_without_events_follows_detail_links(spider):
@@ -238,3 +342,187 @@ def test_platform_feed_events_become_items(spider):
     [item] = items
     assert item['extraction_method'] == 'platform:wordpress_tribe'
     assert item['start_datetime'] == '2026-06-05T23:00:00+00:00'
+
+
+def test_changed_page_from_a_raw_check_is_fetched_rendered():
+    spider = make_spider(PLAYWRIGHT_ENABLED=True)
+    request = listing_request(spider)
+    check = request.replace(meta={k: v for k, v in request.meta.items() if not k.startswith('playwright')}
+                            | {'render_if_changed': True}, headers={'If-None-Match': '"abc"'})
+    items, [again] = split(spider.parse_listing(respond(check, html(ld(('Jazz', '2026-06-05T19:00', COMPLETE))))))
+    assert items == [] and again.meta['playwright'] and again.dont_filter
+    assert not again.meta.get('conditional') and b'If-None-Match' not in again.headers
+    assert spider.tracker.for_request(request).listing_pages == 0
+
+
+# ── Skipping unchanged pages ──────────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from scrapy.exceptions import DontCloseSpider, IgnoreRequest  # noqa: E402
+
+from scraper import extraction, page_state  # noqa: E402
+
+EVENTS = 'https://venue.test/events'
+JAZZ = 'https://venue.test/events/jazz'
+JAZZ_LISTING = html(ld(('Jazz', '2026-06-05T19:00', {'description': 'Live jazz…', 'url': '/events/jazz'})))
+
+
+class FakeClient:
+    def __init__(self, pages=(), batches=()):
+        self._pages, self.batches = list(pages), list(batches)
+
+    def pages(self, source_id):
+        return self._pages
+
+    def due_sources(self, limit):
+        return self.batches.pop(0) if self.batches else []
+
+
+def ago(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def jazz_partial():
+    spider = make_spider()
+    [request] = spider.entry_requests(source(effective_recipe={'events_urls': [EVENTS]}))
+    _, [detail] = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
+    return detail.meta['partial']
+
+
+def jazz_record(**extra):
+    partial = jazz_partial()
+    return {'url': JAZZ, 'kind': 'detail', 'listing_url': EVENTS, 'listing_data': partial,
+            'listing_hash': page_state.listing_hash(partial), 'content_hash': 'old',
+            'fingerprints': ['fp-jazz'], 'extraction_version': extraction.EXTRACTION_VERSION,
+            'fetched_at': ago(1), **extra}
+
+
+def spider_with(*records, recipe=None):
+    spider = make_spider()
+    spider.client = FakeClient(records)
+    [first, *_] = spider.entry_requests(source(effective_recipe={
+        'events_urls': [EVENTS], 'sitemap_urls': [], **(recipe or {})}))
+    return spider, first
+
+
+def test_unchanged_detail_page_is_skipped_and_its_events_carried():
+    spider, request = spider_with(jazz_record())
+    items, requests = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
+    assert items == [] and requests == []
+    run = spider.tracker.for_request(request)
+    assert run.seen == {'fp-jazz'} and run.skipped_unchanged == 1
+    assert run.page_fps[EVENTS] == {'fp-jazz'}
+    assert run.pages.get(JAZZ)['last_listed_at']
+
+
+def test_changed_listing_entry_refetches_the_detail_page():
+    spider, request = spider_with(jazz_record(listing_hash='something else'))
+    _, [detail] = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
+    assert detail.url == JAZZ and detail.meta['refetch'] == 'listing' and detail.meta['page_url'] == JAZZ
+
+
+def test_old_detail_page_is_refetched():
+    spider, request = spider_with(jazz_record(fetched_at=ago(8)))
+    _, [detail] = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
+    assert detail.meta['refetch'] == 'max_age'
+
+
+def test_parsed_detail_page_is_recorded():
+    spider, request = spider_with()
+    _, [detail] = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
+    page = ld(('Jazz', '2026-06-05T19:00', {'description': 'Live jazz all night.'}))
+    [item] = list(spider.parse_event(respond(detail, html(page))))
+    record = spider.tracker.for_request(detail).pages.get(JAZZ)
+    assert record['listing_hash'] == page_state.listing_hash(detail.meta['partial'])
+    assert record['listing_url'] == EVENTS and record['listing_data']['title'] == 'Jazz'
+    assert record['extraction_version'] == extraction.EXTRACTION_VERSION and record['fetched_at']
+    assert record['content_hash'] == page_state.content_hash([dict(item)])
+
+
+def test_304_listing_refreshes_its_stale_detail_pages():
+    spider, request = spider_with(jazz_record(fetched_at=ago(8)),
+                                  {**jazz_record(), 'url': 'https://venue.test/events/fresh'})
+    failure = _failure(request, IgnoreRequest('304 Not Modified: ' + EVENTS))
+    [detail] = list(spider._errback(failure))
+    assert detail.url == JAZZ and detail.meta['refetch'] == 'max_age'
+    assert detail.meta['partial']['title'] == 'Jazz'
+
+
+def test_sitemap_lastmod_is_read_before_listings_and_learned():
+    spider = make_spider()
+    spider.client = FakeClient([jazz_record()])
+    [robots] = spider.entry_requests(source(effective_recipe={'events_urls': [EVENTS]}))
+    assert robots.url == 'https://venue.test/robots.txt' and not robots.meta.get('playwright')
+    _, [sm] = split(spider.parse_robots_sitemaps(respond(robots, 'Sitemap: https://venue.test/sm.xml',
+                                                         cls=TextResponse)))
+    body = (f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{JAZZ}/</loc>'
+            f'<lastmod>{datetime.now(timezone.utc).isoformat()}</lastmod></url></urlset>')
+    _, [listing] = split(spider.parse_lastmod(respond(sm, body, cls=TextResponse)))
+    assert listing.url == EVENTS
+    run = spider.tracker.for_request(listing)
+    assert run.learned['sitemap_urls'] == ['https://venue.test/sm.xml']
+    _, [detail] = split(spider.parse_listing(respond(listing, JAZZ_LISTING)))
+    assert detail.meta['refetch'] == 'lastmod'
+
+
+def test_missing_sitemap_is_learned_as_none():
+    spider = make_spider()
+    spider.client = FakeClient([jazz_record()])
+    [robots] = spider.entry_requests(source(effective_recipe={'events_urls': [EVENTS]}))
+    [fallback] = list(spider._lastmod_failed(_failure(robots)))
+    assert fallback.url == 'https://venue.test/sitemap.xml'
+    [listing] = list(spider._lastmod_failed(_failure(fallback)))
+    assert listing.url == EVENTS
+    assert spider.tracker.for_request(listing).learned['sitemap_urls'] == []
+
+
+def test_nothing_to_skip_means_no_sitemap_fetch(spider):
+    [request] = spider.entry_requests(source(effective_recipe={'events_urls': [EVENTS]}))
+    assert request.url == EVENTS
+
+
+def test_lastmod_that_missed_a_change_is_not_trusted():
+    spider, request = spider_with(jazz_record(listing_hash='changed'))
+    _, [detail] = split(spider.parse_listing(respond(request, JAZZ_LISTING)))
+    run = spider.tracker.for_request(detail)
+    from scraper.discovery import sitemap
+    run.lastmod[sitemap.key(JAZZ)] = datetime.now(timezone.utc) - timedelta(days=3)
+    list(spider.parse_event(respond(detail, html(ld(('Jazz', '2026-06-05T19:00', {}))))))
+    assert run.learned['lastmod_trusted'] is False
+
+
+# ── Claiming more sources ─────────────────────────────────────────────────────
+
+class FakeEngine:
+    def __init__(self):
+        self.crawled = []
+
+    def crawl(self, request):
+        self.crawled.append(request)
+
+
+def claiming_spider(batches, budget_minutes=30):
+    spider = make_spider()
+    spider.keep_claiming, spider.budget_seconds = True, budget_minutes * 60
+    spider.client = FakeClient(batches=batches)
+    spider.crawler = type('C', (), {'engine': FakeEngine()})()
+    return spider
+
+
+def test_idle_spider_claims_the_next_batch():
+    spider = claiming_spider([[source(id='a', domain='a.test', homepage_url='https://a.test/')]])
+    with pytest.raises(DontCloseSpider):
+        spider._on_idle()
+    assert [r.url for r in spider.crawler.engine.crawled] == ['https://a.test/']
+    spider._on_idle()                                   # queue empty: let it close
+
+
+def test_idle_spider_stops_claiming_after_its_budget():
+    spider = claiming_spider([[source()]], budget_minutes=0)
+    spider._on_idle()
+    assert spider.crawler.engine.crawled == []
+
+
+def test_idle_spider_without_keep_claiming_closes(spider):
+    spider._on_idle()

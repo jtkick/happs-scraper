@@ -37,6 +37,15 @@ class BackendClient:
     def due_sources(self, limit: int) -> list[dict]:
         return self._json('GET', '/scraper/sources/due/', params={'limit': limit}) or []
 
+    def due_count(self) -> Optional[int]:
+        """How many sources are due (nothing is leased); None when the backend can't be reached."""
+        data = self._json('GET', '/scraper/sources/due/count/')
+        return data.get('due') if data else None
+
+    def pages(self, source_id: str) -> list[dict]:
+        """What earlier crawls knew about each of the source's pages (scraper/page_state.py)."""
+        return self._json('GET', f'/scraper/sources/{source_id}/pages/') or []
+
     def source_by_domain(self, domain: str) -> Optional[dict]:
         return self._json('GET', '/scraper/sources/', params={'domain': domain})
 
@@ -70,8 +79,39 @@ class BackendClient:
     def update_report(self, report_id: str, data: dict) -> Optional[dict]:
         return self._json('PATCH', f'/scraper/reports/{report_id}/', json=data)
 
+    def reports(self) -> list[dict]:
+        """Every report still worth a look: open or diagnosed."""
+        return [r for status in ('open', 'diagnosed')
+                for r in self._json('GET', '/scraper/reports/', params={'status': status}) or []]
+
     def summary(self, hours: int = 24) -> Optional[dict]:
         return self._json('GET', '/scraper/summary/', params={'hours': hours})
+
+    # ── Review feeds (scraper/snapshots.py, tools/review.py sync) ──────────────
+
+    def upload_snapshot(self, snapshot: dict) -> Optional[dict]:
+        return self._json('POST', '/scraper/snapshots/', json=snapshot)
+
+    def snapshots(self, status: str = 'pending') -> list[dict]:
+        return self._json('GET', '/scraper/snapshots/', params={'status': status, 'limit': 200}) or []
+
+    def snapshot_html(self, snapshot_id: str) -> Optional[str]:
+        try:
+            resp = self.session.get(f'{self.base}/scraper/snapshots/{snapshot_id}/html/',
+                                    timeout=self.timeout)
+        except requests.RequestException as exc:
+            logger.error("Backend snapshot %s failed: %s", snapshot_id, exc)
+            return None
+        return resp.text if resp.ok else None
+
+    def update_snapshot(self, snapshot_id: str, data: dict) -> Optional[dict]:
+        return self._json('PATCH', f'/scraper/snapshots/{snapshot_id}/', json=data)
+
+    def corrections(self, status: str = 'pending') -> list[dict]:
+        return self._json('GET', '/scraper/corrections/', params={'status': status}) or []
+
+    def update_correction(self, correction_id: str, data: dict) -> Optional[dict]:
+        return self._json('PATCH', f'/scraper/corrections/{correction_id}/', json=data)
 
     # ── Internals ─────────────────────────────────────────────────────────────
 

@@ -21,12 +21,13 @@ Disable entirely by leaving ANTHROPIC_API_KEY blank in .env.
 
 from __future__ import annotations
 import functools
+import hashlib
 import json
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +112,21 @@ def build_user_message(text: str, *, url: str = '', venue: Optional[str] = None,
     return '\n'.join(header) + '\n\nPage text:\n' + text[:MAX_TEXT_CHARS]
 
 
+def prompt_hash(user_message: str) -> str:
+    """Identifies the exact prompt an answer was given for, so a replay can tell it's stale."""
+    return hashlib.sha256((_SYSTEM + '\n' + user_message).encode()).hexdigest()[:16]
+
+
 def extract_many(html: str, base_url: str, api_key: str, *,
-                 venue: Optional[str] = None, today: Optional[date] = None) -> AIResult:
-    """Ask Claude for every event on the page. Returns an empty result on any failure."""
-    text = _page_text(html)
+                 venue: Optional[str] = None, today: Optional[date] = None,
+                 respond: Optional[Callable] = None) -> AIResult:
+    """
+    Ask Claude for every event on the page. Returns an empty result on any failure.
+
+    `respond(system, user, schema, label)` stands in for the API call; the
+    review tools use it to record a response and replay it offline.
+    """
+    text = page_text(html)
     if not text or len(text) < MIN_TEXT_CHARS:
         return AIResult()
 
@@ -122,9 +134,9 @@ def extract_many(html: str, base_url: str, api_key: str, *,
     if truncated:
         logger.info("AI input for %s truncated from %d to %d chars", base_url, len(text), MAX_TEXT_CHARS)
 
-    data = _call(api_key, _SYSTEM,
-                 build_user_message(text, url=base_url, venue=venue, today=today),
-                 EVENTS_SCHEMA, base_url)
+    respond = respond or functools.partial(_call, api_key)
+    data = respond(_SYSTEM, build_user_message(text, url=base_url, venue=venue, today=today),
+                   EVENTS_SCHEMA, base_url)
     if not data:
         return AIResult(truncated=truncated)
 
@@ -217,7 +229,7 @@ def _client(api_key: str):
 
 
 def _call(api_key: str, system: Optional[str], user: str, schema: dict, label: str,
-          max_tokens: int = 16000) -> Optional[dict]:
+          max_tokens: int = 16000, model: str = MODEL) -> Optional[dict]:
     try:
         import anthropic
     except ImportError:
@@ -225,7 +237,7 @@ def _call(api_key: str, system: Optional[str], user: str, schema: dict, label: s
         return None
 
     kwargs = {
-        'model': MODEL,
+        'model': model,
         'max_tokens': max_tokens,
         'messages': [{'role': 'user', 'content': user}],
         'output_config': {'format': {'type': 'json_schema', 'schema': schema}},
@@ -258,13 +270,19 @@ def _call(api_key: str, system: Optional[str], user: str, schema: dict, label: s
     return data if isinstance(data, dict) else None
 
 
-def _page_text(html: str) -> Optional[str]:
+def page_text(html: str) -> Optional[str]:
+    """The page text the model sees (tables kept: schedules often live in them)."""
     try:
         import trafilatura
     except ImportError:
         logger.warning("trafilatura not installed — skipping AI extraction")
         return None
-    return trafilatura.extract(html, include_comments=False, include_tables=True)
+    text = trafilatura.extract(html, include_comments=False, include_tables=True)
+    if text and len(text) >= MIN_TEXT_CHARS:
+        return text
+    # trafilatura found no main content (a JS shell): give the model all of the page's text.
+    from scraper.text import full_text
+    return full_text(html) or text
 
 
 def _normalize(text: str) -> str:

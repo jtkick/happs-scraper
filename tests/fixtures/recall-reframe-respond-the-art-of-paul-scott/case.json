@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "url": "https://www.visitcincy.com/event/recall-reframe-respond-the-art-of-paul-scott/16718/",
+  "kind": "detail",
+  "captured_at": "2025-11-01T12:00:00+00:00",
+  "source": "manual",
+  "seed_context": {
+    "timezone": "America/New_York"
+  },
+  "events": [
+    {
+      "title": "Recall. Reframe. Respond. The Art of Paul Scott",
+      "description": "Familiar ceramics, radically reimagined. British artist Paul Scott transforms classic blue-and-white tableware — some antique, some newly made — into bold, thought-provoking works that confront history, human rights, environmental crises and the legacies of empire. Using screenprinting, engraving, collage and inventive reassembly, he breaks, repurposes and reinterprets everyday objects to reveal hidden stories and challenge what we think we know. His \"New American Scenery\" series draws on historic transferware made for American collectors, blending Scott’s experiences traveling across the United States with a contemporary, inclusive perspective. The exhibition engages with the museum’s American art collections, creating a dialogue between past and present and sparking reflection on our shared experiences. Explore Scott’s striking works across the first and second floors, starting in Galleries 125 and 124 near the Terrace Café. Maps, seating, large-print labels, audio guides and accessibility tools ensure every visitor can fully engage with the exhibition. Don’t miss this chance to see everyday objects transformed into powerful, conversation-starting art. Experience Paul Scott’s visionary ceramics in person and discover the stories they reveal.",
+      "start_datetime": "2025-10-10T04:00:00+00:00",
+      "end_datetime": null,
+      "location_title": "Cincinnati Art Museum",
+      "location_address": "953 Eden Park Dr., Cincinnati, OH, 45202",
+      "location_lat": 39.1145547,
+      "location_lon": -84.49694579999999,
+      "ticket_url": "https://cincinnatiartmuseum.org/art/exhibitions/upcoming-exhibitions/recall-reframe-respond-the-art-of-paul-scott/",
+      "url": "https://www.visitcincy.com/event/recall-reframe-respond-the-art-of-paul-scott/16718/",
+      "image_url": "https://assets.simpleviewinc.com/sv-cincy/image/fetch/c_fill,h_396,q_75,w_704/https://assets.simpleviewinc.com/simpleview/image/upload/crm/cincyregion/Recall.-Reframe.-Respond.-The-Art-of-Paul-Scott_E57E558E-00CD-BDDC-9AFACD184550603C_e580219f-b061-5687-653d2b679907f470.png",
+      "rdates": null,
+      "evidence": "October 10, 2025 - January 3, 2026",
+      "recurrence_freq": "weekly",
+      "recurrence_byday": [
+        "MO",
+        "TU",
+        "WE",
+        "TH",
+        "FR",
+        "SA"
+      ],
+      "recurrence_until": "2026-01-03"
+    }
+  ],
+  "complete": true,
+  "known_failures": [
+    {
+      "path": "events[0].title",
+      "reason": "JSON-LD name keeps its literal quote marks"
+    }
+  ],
+  "notes": "Real Visit Cincy detail page for a museum exhibition (a date range, not separate dates).",
+  "reviewer": "claude",
+  "reviewed_at": "2026-10-03T01:29:33+00:00"
+}

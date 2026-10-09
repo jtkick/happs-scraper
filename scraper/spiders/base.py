@@ -51,8 +51,10 @@ import logging
 from typing import Optional
 
 import scrapy
+from scrapy.spidermiddlewares.httperror import HttpError
 
 from scraper import extraction
+from scraper.rendering import raw_retry, render_meta
 from scraper.extractors import jsonld
 from scraper.items import EventItem
 
@@ -81,11 +83,13 @@ class BaseEventSpider(scrapy.Spider):
                 yield scrapy.Request(
                     seed.url,
                     callback=self.parse,
-                    meta={'context': seed.as_context()},
+                    meta=self._meta(seed.as_context()),
                     errback=self._handle_error,
                 )
         else:
-            yield from super().start_requests()
+            for url in self.start_urls:
+                yield scrapy.Request(url, dont_filter=True, meta=self._meta({}),
+                                     errback=self._handle_error)
 
     def parse(self, response, **kwargs):
         """Route the start URL to the appropriate handler."""
@@ -131,14 +135,14 @@ class BaseEventSpider(scrapy.Spider):
                 yield response.follow(
                     url,
                     callback=self.parse_listing,
-                    meta={'context': context},
+                    meta=self._meta(context),
                     errback=self._handle_error,
                 )
             else:
                 yield response.follow(
                     url,
                     callback=self.parse_event,
-                    meta={'context': context},
+                    meta=self._meta(context),
                     errback=self._handle_error,
                 )
 
@@ -148,7 +152,7 @@ class BaseEventSpider(scrapy.Spider):
             yield response.follow(
                 next_page,
                 callback=self.parse_listing,
-                meta={'context': context},
+                meta=self._meta(context),
                 errback=self._handle_error,
             )
 
@@ -167,19 +171,10 @@ class BaseEventSpider(scrapy.Spider):
         partial: Optional[dict] = response.meta.get('partial')
 
         result = self.extract_page(response)
-        text = self._clean_text(response.text) if result.single else None
-        for data, node in result.events:
-            final = extraction.finalize(
-                data, context=inherited, partial=partial, jsonld_node=node, page_text=text)
-            if final is None:
-                logger.debug("No event data found on %s — skipping", response.url)
-                continue
+        events = extraction.finalize_page(result, response.text, context=inherited, partial=partial)
+        self.page_parsed(response, result, events, kind='detail')
+        for final in events:
             yield self.build_item(final, response)
-
-        if not result.events and partial:
-            final = extraction.finalize(partial, context=inherited)
-            if final:
-                yield self.build_item(final, response)
 
     def extract_page(self, response) -> extraction.PageResult:
         return extraction.extract_page(
@@ -187,6 +182,9 @@ class BaseEventSpider(scrapy.Spider):
             selectors=self._extract_selectors(response),
             ai=self._ai_extractor(response),
         )
+
+    def page_parsed(self, response, result: extraction.PageResult, events: list[dict], kind: str):
+        """Hook: called with every page's finalized events before they're yielded."""
 
     def build_item(self, data: dict, response) -> EventItem:
         item = EventItem()
@@ -279,12 +277,27 @@ class BaseEventSpider(scrapy.Spider):
             return None
         from scraper.extractors import ai
         venue = (response.meta.get('context') or {}).get('location_title')
-        return lambda html, url: ai.extract_many(html, url, api_key, venue=venue)
+
+        def respond(system, user, schema, label):
+            # Kept on the response so a page snapshot can carry the model's exact answer.
+            data = ai._call(api_key, system, user, schema, label)
+            response.meta['ai_response'] = {
+                'model': ai.MODEL, 'prompt_hash': ai.prompt_hash(user), 'response': data}
+            return data
+
+        return lambda html, url: ai.extract_many(html, url, api_key, venue=venue, respond=respond)
 
     _sufficient = staticmethod(extraction.sufficient)
     _merge = staticmethod(extraction.merge)
     _merge_enriched = staticmethod(extraction.merge_enriched)
-    _clean_text = staticmethod(extraction.page_text)
+
+    def _meta(self, context: dict) -> dict:
+        return {'context': context, **render_meta(self.settings)}
 
     def _handle_error(self, failure):
+        retry = None if failure.check(HttpError) else raw_retry(failure.request)
+        if retry is not None:
+            logger.warning("Render failed: %s — %s; fetching it raw", failure.request.url, failure.value)
+            yield retry
+            return
         logger.error("Request failed: %s — %s", failure.request.url, failure.value)

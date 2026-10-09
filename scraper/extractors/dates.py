@@ -224,6 +224,16 @@ def _parse_date_range(text: str, year_hint: Optional[int]) -> list[str]:
     ]
 
 
+# A run across months, "September 30, 2026 - October 31, 2026": its two ends are
+# the event's start and end, not a list of occurrences.
+_SPAN_RE = re.compile(
+    r'(?:' + _MON_PAT + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*20\d{2})?'
+    r'\s*(?:–|—|-|\bto\b|\bthrough\b|\bthru\b)\s*'
+    r'(?:' + _MON_PAT + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*20\d{2})?',
+    re.IGNORECASE,
+)
+
+
 # ── Pattern 3: Explicit date list  "June 5, June 12, June 19 [at time]" ────────
 
 _DATE_LIST_RE = re.compile(
@@ -315,6 +325,49 @@ def _parse_exceptions(text: str, year_hint: Optional[int]) -> list[dict]:
     return results
 
 
+# ── Single date  "October 31, 2026" / "31 Oct" / "10/31/2026" / "2026-10-31" ────
+
+_ISO_DATE_RE = re.compile(r'^(20\d{2})-(\d{1,2})-(\d{1,2})\b')
+_MDY_RE = re.compile(r'^(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?\b(?!\s*(?:[ap]\.?m\b|:))', re.IGNORECASE)
+_MONTH_FIRST_RE = re.compile(
+    r'^(?:(?:' + _WD_PAT + r')\.?,?\s+)?(' + _MON_PAT + r')\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b'
+    r'(?!\s*(?:[ap]\.?m\b|:))(?:,?\s*(20\d{2}))?',
+    re.IGNORECASE,
+)
+_DAY_FIRST_RE = re.compile(
+    r'^(?:(?:' + _WD_PAT + r')\.?,?\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(' + _MON_PAT + r')\b\.?'
+    r'(?:,?\s*(20\d{2}))?',
+    re.IGNORECASE,
+)
+
+
+def parse_date(text: str, year_hint: Optional[int] = None) -> Optional[date]:
+    """
+    The date at the start of `text`, or None. A yearless date takes year_hint,
+    else its nearest future occurrence. Numeric dates are read US-style (M/D).
+    """
+    text = text.strip()
+    month = day = year = None
+    if m := _ISO_DATE_RE.match(text):
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    elif m := _MONTH_FIRST_RE.match(text):
+        month, day = _MONTH[m.group(1).lower()], int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else None
+    elif m := _DAY_FIRST_RE.match(text):
+        day, month = int(m.group(1)), _MONTH[m.group(2).lower()]
+        year = int(m.group(3)) if m.group(3) else None
+    elif m := _MDY_RE.match(text):
+        month, day = int(m.group(1)), int(m.group(2))
+        if m.group(3):
+            year = int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
+    if month is None:
+        return None
+    try:
+        return date(year or _best_year(month, day, year_hint), month, day)
+    except ValueError:
+        return None
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def extract(text: str, year_hint: Optional[int] = None) -> Optional[dict]:
@@ -360,7 +413,7 @@ def extract(text: str, year_hint: Optional[int] = None) -> Optional[dict]:
         return result or None
 
     # Explicit date list: "June 5, June 12, June 19 at 7 pm"
-    date_list = _parse_date_list(remaining, year)
+    date_list = _parse_date_list(_SPAN_RE.sub(' ', remaining), year)
     if date_list:
         result['start_datetime'] = date_list[0][0]
         if date_list[0][1]:

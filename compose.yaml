@@ -1,0 +1,26 @@
+# Autoscaling crawler pool. On the server, with .env filled in (HAPPS_API_BASE,
+# HAPPS_SCRAPER_TOKEN, ANTHROPIC_API_KEY):
+#
+#     docker compose up -d --build
+#     docker compose logs -f worker
+#
+# The pool starts one crawler per WORKER_SOURCES_PER_CRAWLER due sources, up to
+# WORKER_MAX_CRAWLERS. Each crawler runs its own Chromium (PLAYWRIGHT_MAX_PAGES_PER_CONTEXT
+# pages at once); allow ~1.5 GB of memory per crawler. Another machine can run
+# the same compose file: the backend leases each source to one crawler.
+services:
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      PLAYWRIGHT_ENABLED: "true"
+      PLAYWRIGHT_MAX_CONTEXTS: "1"
+      PLAYWRIGHT_MAX_PAGES_PER_CONTEXT: "4"
+      WORKER_MAX_CRAWLERS: ${WORKER_MAX_CRAWLERS:-4}
+      WORKER_SOURCES_PER_CRAWLER: ${WORKER_SOURCES_PER_CRAWLER:-20}
+      WORKER_BUDGET_MINUTES: ${WORKER_BUDGET_MINUTES:-30}
+    shm_size: 1gb          # Chromium needs more shared memory than Docker's 64 MB default
+    init: true
+    mem_limit: ${WORKER_MEM_LIMIT:-6g}
+    restart: unless-stopped
+    stop_grace_period: 2m  # crawlers finish in-flight pages and send their reports

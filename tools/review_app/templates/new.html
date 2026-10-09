@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% block title %}Capture a page{% endblock %}
+{% block content %}
+<main class="narrow">
+  <h1>Capture a page</h1>
+  <p class="hint">The page is parsed exactly as a crawl would parse it{% if has_ai %}, and the model's answer is recorded so tests can replay it offline{% endif %}. The case lands in the inbox for you to correct.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/new" class="form" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Fetching and parsing…'">
+    <label>URL <input name="url" type="url" required autofocus value="{{ form.url or '' }}" placeholder="https://venue.example/events/"></label>
+    <div class="row">
+      <label>Page kind
+        <select name="kind">
+          <option value="listing" {{ 'selected' if form.kind != 'detail' }}>Listing (many events)</option>
+          <option value="detail" {{ 'selected' if form.kind == 'detail' }}>Detail (one event)</option>
+        </select>
+      </label>
+      <label>Timezone <input name="timezone" value="{{ form.timezone or '' }}" placeholder="America/New_York"></label>
+    </div>
+    <fieldset>
+      <legend>Venue context <span class="hint">— what the source record would supply</span></legend>
+      <label>Venue name <input name="location_title" value="{{ form.location_title or '' }}"></label>
+      <label>Address <input name="location_address" value="{{ form.location_address or '' }}"></label>
+      <div class="row">
+        <label>Latitude <input name="location_lat" inputmode="decimal" value="{{ form.location_lat or '' }}"></label>
+        <label>Longitude <input name="location_lon" inputmode="decimal" value="{{ form.location_lon or '' }}"></label>
+      </div>
+    </fieldset>
+    <div class="row checks">
+      <label class="check"><input type="checkbox" name="ai" {{ 'checked' if has_ai else 'disabled' }}> Use AI {% if not has_ai %}<span class="hint">(set ANTHROPIC_API_KEY)</span>{% endif %}</label>
+      <label class="check"><input type="checkbox" name="render" {{ 'checked' if form.render }}> Render with Playwright</label>
+    </div>
+    <label>Notes <input name="notes" value="{{ form.notes or '' }}" placeholder="What this case is for"></label>
+    <details>
+      <summary>Paste HTML instead of fetching</summary>
+      <textarea name="html" rows="8" placeholder="&lt;html&gt;…">{{ form.html or '' }}</textarea>
+    </details>
+    <button class="btn primary" type="submit">Capture</button>
+  </form>
+</main>
+{% endblock %}
