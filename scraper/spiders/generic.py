@@ -27,7 +27,8 @@ Per source:
      PAGE_MAX_AGE_DAYS by this EXTRACTION_VERSION. A 304 listing still
      refreshes its stale detail pages.
   3. Anything learned (events URLs, platform, selectors) and a run report go
-     back to the backend when the spider closes (scraper/sources/tracker.py).
+     back to the backend when the spider closes, or with keep_claiming each
+     time a batch is done (scraper/sources/tracker.py).
 """
 from __future__ import annotations
 import logging
@@ -117,6 +118,7 @@ class GenericEventSpider(BaseEventSpider):
         """With keep_claiming, claim the next batch whenever the current one is done."""
         if not self.keep_claiming or self.client is None or self.adhoc_url or self.source_domain:
             return
+        self._flush()
         if time.monotonic() - self.started >= self.budget_seconds:
             logger.info("Time budget spent; finishing")
             return
@@ -594,10 +596,13 @@ class GenericEventSpider(BaseEventSpider):
     def _run(self, response) -> Optional[SourceRun]:
         return self.tracker.for_request(response.request if hasattr(response, 'request') else response)
 
-    def _on_closed(self, spider, reason):
+    def _flush(self):
         self.tracker.flush()
         if self.snapshots:
             self.snapshots.flush()
+
+    def _on_closed(self, spider, reason):
+        self._flush()
         if self.client:
             self.client.close()
 

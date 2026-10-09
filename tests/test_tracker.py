@@ -83,6 +83,8 @@ def test_flush_saves_learned_recipe_and_reports():
     assert update['recipe'] == {'events_urls': ['https://venue.test/events'], 'item_css': 'div.card'}
     assert update['recipe_origin'] == 'ai'
     assert client.reports[0]['recipe_version'] == 3
+    tracker.flush()
+    assert len(client.reports) == 1                     # flushed runs are forgotten
 
 
 def test_relearn_replaces_recipe_when_it_performs():

@@ -1,10 +1,11 @@
 """
-Per-source bookkeeping for one crawl, reported to the backend when the
-spider closes (POST api/scraper/runs/) along with any recipe it learned.
+Per-source bookkeeping for one crawl, reported to the backend (POST
+api/scraper/runs/) along with any recipe it learned.
 
-Reports are sent only at spider close: items finish the pipelines
-asynchronously, so an earlier flush could miss fingerprints and make
-still-listed events look like they disappeared.
+Reports are sent only when the crawler is idle or closing: items finish the
+pipelines asynchronously, so an earlier flush could miss fingerprints and
+make still-listed events look like they disappeared. Once idle, every page
+and item of the runs so far is done.
 """
 from __future__ import annotations
 import logging
@@ -196,8 +197,10 @@ class RunTracker:
     # ── Flush ─────────────────────────────────────────────────────────────────
 
     def flush(self):
+        """Report every run so far and forget them, so a long-lived crawler doesn't hold them all."""
         now = datetime.now(timezone.utc).isoformat()
-        for run in self.runs.values():
+        runs, self.runs = list(self.runs.values()), {}
+        for run in runs:
             for page, fps in run.page_fps.items():
                 run.pages.update(page, 'listing', fingerprints=sorted(fps), last_listed_at=now)
             for page, fps in run.detail_fps.items():

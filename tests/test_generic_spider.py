@@ -518,6 +518,16 @@ def test_idle_spider_claims_the_next_batch():
     spider._on_idle()                                   # queue empty: let it close
 
 
+def test_idle_spider_reports_the_finished_batch_before_claiming():
+    spider = claiming_spider([[source(id='b', domain='b.test', homepage_url='https://b.test/')]])
+    flushed = []
+    spider.tracker.flush = lambda: flushed.append(list(spider.tracker.runs))
+    spider.tracker.start(source())
+    with pytest.raises(DontCloseSpider):
+        spider._on_idle()
+    assert flushed == [['src-1']]
+
+
 def test_idle_spider_stops_claiming_after_its_budget():
     spider = claiming_spider([[source()]], budget_minutes=0)
     spider._on_idle()

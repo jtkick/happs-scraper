@@ -9,7 +9,7 @@
 - `ROBOTSTXT_OBEY = True`. Do not disable politeness settings.
 
 ## Authority & Links
-- **Generic spider** (default for all venues): `scraper/spiders/generic.py` — sources come from the backend (`api/scraper/sources/due/`); discovery → listing → detail; learned recipe + run report sent at spider close
+- **Generic spider** (default for all venues): `scraper/spiders/generic.py` — sources come from the backend (`api/scraper/sources/due/`); discovery → listing → detail; learned recipe + run report sent at spider close, or each time a `keep_claiming` batch finishes (idle), after which the run is forgotten
 - Detail pages: followed when the listing lacks start/description (`required`) or the page probably says more (`soft`: cut-off description, no address, no end, unexplained multi-day span); soft follows leave `GENERIC_DETAIL_RESERVE` of the budget and the recipe learns `detail_useful`
 - Rendering: `scraper/rendering.py` — with `PLAYWRIGHT_ENABLED` every home/listing/detail page is rendered (feeds and sitemaps raw); a failed render is refetched raw; conditional listing checks go raw first and render only if changed (Chromium aborts on 304)
 - Page text: `scraper/text.py` `full_text` = visible DOM text + embedded-JSON text; used for recurrence (strong phrases near the title, single-event pages only) and when trafilatura comes back thin
@@ -36,7 +36,7 @@
 - `run.py` `run_case` parses a case as a crawl would (`extract_page` → `finalize_page` → `pipelines.dry_run`) with the clock frozen at `captured_at`; `compare.py` scores labels against it (paths like `events[2].end_datetime`, `extra[<title>]`)
 - Reviewed cases live in `tests/fixtures/<id>/` (committed); unreviewed ones in `review/inbox/` (gitignored). `tests/test_extractors.py` runs every fixture; a mismatch listed in `known_failures` is expected, and one that starts passing fails (same rule as strict xfail), so remove it in the same change
 - Review app: `tools/review_app/` (FastAPI), started by `tools/review.py`; sync from the backend in `tools/review_app/sync.py`
-- Crawl snapshots: `scraper/snapshots.py` `SnapshotSampler` queues pages where AI ran, an event went to review or was dropped (not just past), or a known events page came back empty, plus `SNAPSHOT_SAMPLE_RATE` of the rest; uploaded to `api/scraper/snapshots/` at spider close
+- Crawl snapshots: `scraper/snapshots.py` `SnapshotSampler` queues pages where AI ran, an event went to review or was dropped (not just past), or a known events page came back empty, plus `SNAPSHOT_SAMPLE_RATE` of the rest; uploaded to `api/scraper/snapshots/` with the run reports
 - Unit tests: one file per module — `tests/test_<module>.py`. Known defects are recorded as `@pytest.mark.xfail(strict=True)` with the cause in `reason`; fixing one turns it into an XPASS failure, so drop the marker in the same change.
 - `.env.example` — required env vars
 
