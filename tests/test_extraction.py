@@ -239,12 +239,6 @@ def test_added_info():
                                  {**partial, 'end_datetime': '2026-06-05T22:00'})
 
 
-def test_thin_main_text_falls_back_to_all_text():
-    shell = '<html><body><p>Loading</p><script>var data = {"recurrence": "Recurring daily", ' \
-            '"name": "Show"}</script></body></html>'
-    assert 'Recurring daily' in extraction.page_text(shell)
-
-
 def test_span_shorter_than_the_repeat_is_one_occurrence():
     data = extraction.finalize({'title': 'BLINK', 'description': 'Four days of light, every other year.',
                                 'start_datetime': '2026-10-08', 'end_datetime': '2026-10-11'})

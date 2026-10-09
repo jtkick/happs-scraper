@@ -8,12 +8,13 @@ Each mismatch has a stable path, which is what a case's known_failures lists:
   extra[Gift Cards]         a parsed event that isn't labelled (complete cases only)
 """
 from __future__ import annotations
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
+
+from scraper.util import fold
 
 _TITLE_MATCH = 0.8
 _DESCRIPTION_MATCH = 0.9
@@ -97,12 +98,12 @@ def compare(expected: list[dict], actual: list[dict], *, not_events: list[str] =
         matches.append(match)
 
     used = {id(a) for a in pairs.values()}
-    rejected_titles = {_norm(t) for t in not_events}
+    rejected_titles = {fold(t) for t in not_events}
     extras, rejected = [], []
     for event in actual:
         if id(event) in used:
             continue
-        (rejected if _norm(event.get('title', '')) in rejected_titles else extras).append(event)
+        (rejected if fold(event.get('title', '')) in rejected_titles else extras).append(event)
     return Comparison(matches=matches, extras=extras, rejected=rejected, complete=complete)
 
 
@@ -120,7 +121,7 @@ def field_equal(key: str, expected: Any, actual: Any, timezone_name: Optional[st
         return ({_instant(_exdate(v), timezone_name) for v in expected}
                 == {_instant(_exdate(v), timezone_name) for v in actual})
     if key in _SET_FIELDS:
-        return {_norm(v) for v in expected} == {_norm(v) for v in actual}
+        return {fold(v) for v in expected} == {fold(v) for v in actual}
     if key in ('location_lat', 'location_lon'):
         return abs(float(expected) - float(actual)) <= _COORD_TOLERANCE
     if key == 'ticket_price':
@@ -130,7 +131,7 @@ def field_equal(key: str, expected: Any, actual: Any, timezone_name: Optional[st
     if key == 'description':
         return similarity(expected, actual) >= _DESCRIPTION_MATCH
     if isinstance(expected, str):
-        return _norm(expected) == _norm(str(actual))
+        return fold(expected) == fold(str(actual))
     return expected == actual
 
 
@@ -173,12 +174,9 @@ def _empty(value) -> bool:
     return value is None or value == '' or value == [] or value == {}
 
 
-def _norm(text) -> str:
-    return re.sub(r'\s+', ' ', str(text)).strip().casefold()
-
 
 def similarity(a, b) -> float:
-    a, b = _norm(a), _norm(b)
+    a, b = fold(a), fold(b)
     if a == b:
         return 1.0
     return SequenceMatcher(None, a, b).ratio()

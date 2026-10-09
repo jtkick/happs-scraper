@@ -19,8 +19,10 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
+from scraper.util import parse_utc
+
 # Fields that say how an event was found rather than what it is.
-_BOOKKEEPING = frozenset({
+_HOW_FOUND = frozenset({
     'extraction_method', 'tag_names', 'confidence', 'review_required', 'evidence', 'fingerprint',
     'source_id', 'source_url', 'ingest_status', 'drop_reason',
 })
@@ -30,7 +32,7 @@ _EMPTY = (None, '', [], {})
 def event_view(data: dict) -> dict:
     """An event's own fields: no private keys, bookkeeping or empty values."""
     return {k: v for k, v in data.items()
-            if not k.startswith('_') and k not in _BOOKKEEPING and v not in _EMPTY}
+            if not k.startswith('_') and k not in _HOW_FOUND and v not in _EMPTY}
 
 
 def stable_hash(value) -> str:
@@ -59,7 +61,7 @@ def refetch_reason(record: Optional[dict], *, version: int, max_age: timedelta,
         return 'new'
     if record.get('extraction_version') != version:
         return 'version'
-    fetched = parse_time(record['fetched_at'])
+    fetched = parse_utc(record['fetched_at'])
     now = now or datetime.now(timezone.utc)
     if fetched is None or now - fetched > max_age:
         return 'max_age'
@@ -80,19 +82,10 @@ def lastmod_missed_change(record: Optional[dict], *, content_hash: str, lastmod:
     """
     if not record or not lastmod or not record.get('content_hash'):
         return False
-    fetched = parse_time(record['fetched_at']) if record.get('fetched_at') else None
+    fetched = parse_utc(record['fetched_at']) if record.get('fetched_at') else None
     return bool(fetched and lastmod <= fetched and record.get('extraction_version') == version
                 and record['content_hash'] != content_hash)
 
-
-def parse_time(value) -> Optional[datetime]:
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    try:
-        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class PageState:

@@ -22,7 +22,7 @@ from scrapy.utils.gz import gunzip
 from scrapy.utils.sitemap import Sitemap, sitemap_urls_from_robots
 from w3lib.url import canonicalize_url
 
-from scraper.page_state import parse_time
+from scraper.util import parse_utc
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def parse(body: bytes) -> tuple[str, list[tuple[str, Optional[datetime]]]]:
     for item in sitemap:
         loc = (item.get('loc') or '').strip()
         if loc:
-            entries.append((loc, parse_time(item['lastmod']) if item.get('lastmod') else None))
+            entries.append((loc, parse_utc(item['lastmod']) if item.get('lastmod') else None))
         if len(entries) >= MAX_URLS:
             break
     return sitemap.type, entries

@@ -1,5 +1,5 @@
-"""Tests for scraper/text.py — all of a page's text, visible and embedded."""
-from scraper.text import full_text, visible_text
+"""Tests for scraper/text.py — a page's main text, and all of it (visible and embedded)."""
+from scraper.text import full_text, main_text, visible_text
 
 
 def test_visible_text_puts_blocks_on_lines_and_drops_code():
@@ -26,3 +26,9 @@ def test_json_ld_is_not_repeated():
 def test_unparseable_html_still_gives_text():
     assert full_text('') == ''
     assert 'hello world' in full_text('<p>hello world')
+
+
+def test_thin_main_text_falls_back_to_all_text():
+    shell = '<html><body><p>Loading</p><script>var data = {"recurrence": "Recurring daily", ' \
+            '"name": "Show"}</script></body></html>'
+    assert 'Recurring daily' in main_text(shell)

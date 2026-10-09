@@ -11,12 +11,12 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Optional
 
 from scraper import follow
 from scraper.discovery.sitemap import SitemapRead
 from scraper.page_state import PageState
+from scraper.util import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ RELEARN_ACCEPT = 0.8
 class SourceRun:
     source: dict
     key: str = ''
-    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: str = field(default_factory=now_iso)
     relearning: bool = False
     listing_pages: int = 0
     detail_pages: int = 0
@@ -193,7 +193,7 @@ class RunTracker:
 
     def flush(self):
         """Report every run so far and forget them, so a long-lived crawler doesn't hold them all."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_iso()
         runs, self.runs = list(self.runs.values()), {}
         for run in runs:
             for page, fps in run.page_fps.items():

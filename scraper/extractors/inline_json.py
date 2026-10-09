@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from html.parser import HTMLParser
 from typing import Any, Iterator, Optional
+
+from scraper.util import strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -71,27 +72,6 @@ _MIN_SCORE = 3
 
 
 # ── HTML stripping ────────────────────────────────────────────────────────────
-
-class _Stripper(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self._parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self._parts.append(data)
-
-    def get_text(self) -> str:
-        return re.sub(r'\s+', ' ', ' '.join(self._parts)).strip()
-
-
-def _strip_html(text: str) -> str:
-    s = _Stripper()
-    try:
-        s.feed(text)
-    except Exception:
-        return re.sub(r'<[^>]+>', ' ', text).strip()
-    return s.get_text()
-
 
 # ── Script tag extraction ─────────────────────────────────────────────────────
 
@@ -200,7 +180,7 @@ def _coerce(field: str, value: Any) -> Any:
     if field == 'description':
         if not isinstance(value, str):
             return None
-        text = _strip_html(value) if '<' in value else value.strip()
+        text = strip_tags(value) if '<' in value else value.strip()
         return text or None
     if field in ('location_lat', 'location_lon'):
         try:

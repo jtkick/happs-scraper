@@ -17,10 +17,10 @@ import base64
 import gzip
 import logging
 import random
-from datetime import datetime, timezone
 from typing import Optional
 
 from scraper.pipelines import dry_run
+from scraper.util import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class SnapshotSampler:
         self.pending.append({
             'source_id': meta.get('source_id'),
             'url': response.url,
-            'captured_at': datetime.now(timezone.utc).isoformat(),
+            'captured_at': now_iso(),
             'reason': ','.join(reasons),
             'html_gz': base64.b64encode(gzip.compress(response.body)).decode(),
             'parsed': {'strategy': result.strategy, 'ai_used': result.ai_used,

@@ -23,6 +23,7 @@ import dateparser
 from scrapy.exceptions import DropItem
 
 from scraper import cleaners
+from scraper.util import parse_utc
 from scraper.items import PAYLOAD_FIELDS, RECURRENCE_DEFAULTS, default
 
 logger = logging.getLogger(__name__)
@@ -177,12 +178,12 @@ class ValidatePipeline:
         if _NON_EVENT_TITLE.search(title):
             raise DropItem(f"not_an_event: {title}")
         venue = item.get('location_title')
-        if venue and _norm(title) == _norm(venue):
+        if venue and fingerprint_text(title) == fingerprint_text(venue):
             raise DropItem(f"title_is_venue: {title}")
 
         now = datetime.now(timezone.utc)
-        start = _iso(item.get('start_datetime'))
-        end = _iso(item.get('end_datetime'))
+        start = parse_utc(item.get('start_datetime'))
+        end = parse_utc(item.get('end_datetime'))
         if start and start > now + self.MAX_FUTURE:
             raise DropItem(f"too_far_future: {title}")
         if start and self._is_past(item, start, end, now):
@@ -199,7 +200,7 @@ class ValidatePipeline:
             until = item.get('recurrence_until')
             return bool(until) and str(until) < now.date().isoformat()
         if item.get('rdates'):
-            last = max(filter(None, map(_iso, item['rdates'])), default=None)
+            last = max(filter(None, map(parse_utc, item['rdates'])), default=None)
             if last and last >= now:
                 return False
         return (end or start + timedelta(hours=12)) < now
@@ -216,22 +217,15 @@ class ValidatePipeline:
         return round(min(1.0, base + bonus), 2)
 
 
-def _iso(value) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _norm(text: str) -> str:
-    return FingerprintDedupPipeline._normalize(text)
+def fingerprint_text(text) -> str:
+    """Titles and venues as fingerprints compare them. Changing this changes every fingerprint."""
+    text = unicodedata.normalize('NFKD', str(text or '').lower())
+    text = re.sub(r'[^\w\s]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 # Item keys that describe the crawl, not the event.
-_BOOKKEEPING = frozenset({'source_url', 'source_id', 'fingerprint', 'ingest_status'})
+_CRAWL_FIELDS = frozenset({'source_url', 'source_id', 'fingerprint', 'ingest_status'})
 
 
 def dry_run(items, spider) -> tuple[list[dict], list[dict]]:
@@ -254,7 +248,7 @@ def dry_run(items, spider) -> tuple[list[dict], list[dict]]:
 
 
 def _plain(item) -> dict:
-    return {k: v for k, v in dict(item).items() if k not in _BOOKKEEPING and v is not None}
+    return {k: v for k, v in dict(item).items() if k not in _CRAWL_FIELDS and v is not None}
 
 
 # ── 200 · Fingerprint (in-run dedup) ──────────────────────────────────────────
@@ -295,9 +289,9 @@ class FingerprintDedupPipeline:
 
     def _oneoff_fingerprint(self, item: dict) -> str:
         key = '|'.join([
-            self._normalize(item.get('title', '')),
+            fingerprint_text(item.get('title', '')),
             self._date_only(item.get('start_datetime', '')),
-            self._normalize(
+            fingerprint_text(
                 item.get('location_title', '') or item.get('location_address', '')
             ),
         ])
@@ -309,19 +303,13 @@ class FingerprintDedupPipeline:
             'recurrence_byday', 'recurrence_month_mode',
         )}
         key = '|'.join([
-            self._normalize(item.get('title', '')),
-            self._normalize(
+            fingerprint_text(item.get('title', '')),
+            fingerprint_text(
                 item.get('location_title', '') or item.get('location_address', '')
             ),
             signature_fn(rec),
         ])
         return hashlib.sha256(key.encode()).hexdigest()
-
-    @staticmethod
-    def _normalize(text: str) -> str:
-        text = unicodedata.normalize('NFKD', str(text or '').lower())
-        text = re.sub(r'[^\w\s]', '', text)
-        return re.sub(r'\s+', ' ', text).strip()
 
     @staticmethod
     def _date_only(dt_str: str) -> str:

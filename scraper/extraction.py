@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from scraper import text as text_module
+from scraper.util import parse_iso
 from scraper.extractors import (
     recipe as recipe_extractor,
     jsonld,
@@ -248,7 +249,7 @@ def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = No
     or the listing partial alone when the page itself yielded nothing.
     """
     full = text_module.full_text(html) if result.single and result.events else None
-    text = page_text(html, full=full) if result.single else None
+    text = text_module.main_text(html, full=full) if result.single else None
     events = []
     for data, node in result.events:
         final = finalize(data, context=context, partial=partial, jsonld_node=node,
@@ -262,22 +263,6 @@ def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = No
         if final:
             events.append(final)
     return events
-
-
-# Below this, trafilatura found no real main content (a JS shell's "browser not supported").
-THIN_TEXT = 200
-
-
-def page_text(html: str, full: Optional[str] = None) -> Optional[str]:
-    """Main-content text via trafilatura; all the page's text when that comes back thin."""
-    try:
-        import trafilatura
-        text = trafilatura.extract(html, include_comments=False, include_tables=False)
-    except ImportError:
-        text = None
-    if text and len(text) >= THIN_TEXT:
-        return text
-    return (full if full is not None else text_module.full_text(html)) or text
 
 
 _PERIOD_DAYS = {'daily': 1, 'weekly': 7, 'monthly': 28, 'yearly': 365}
@@ -309,18 +294,10 @@ def _fit_recurrence_span(data: dict) -> None:
         data['end_datetime'] = None
 
 
-def parse_iso(value) -> Optional[datetime]:
-    """An ISO date or datetime string as a datetime, or None."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-    except ValueError:
-        return None
 
-
-# Fields every event gets whether or not its page said anything more.
-_BOOKKEEPING = frozenset({'extraction_method', 'tag_names', 'url', 'timezone', 'evidence',
+# Fields every event gets whether or not its page said anything more (unlike
+# page_state._HOW_FOUND, which only leaves out how an event was found).
+_ALWAYS_SET = frozenset({'extraction_method', 'tag_names', 'url', 'timezone', 'evidence',
                           'confidence', 'review_required'})
 
 
@@ -328,7 +305,7 @@ def added_info(partial: dict, final: dict) -> bool:
     """Did the detail page tell us more than the listing (`partial`) already had?"""
     empty = (None, '', [], 'none')
     for key, value in final.items():
-        if key.startswith('_') or key in _BOOKKEEPING or value in empty:
+        if key.startswith('_') or key in _ALWAYS_SET or value in empty:
             continue
         if partial.get(key) in empty:
             return True

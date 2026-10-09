@@ -14,7 +14,7 @@ from typing import Optional
 from urllib.parse import urljoin
 
 from scraper.discovery.events_page import same_site
-from scraper.extraction import parse_iso
+from scraper.util import parse_iso
 
 # A listing description shorter than this that doesn't end a sentence is probably a teaser.
 TEASER_CHARS = 300

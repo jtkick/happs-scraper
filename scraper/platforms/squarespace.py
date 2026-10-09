@@ -1,16 +1,13 @@
 """Squarespace events collections — `?format=json` returns the collection as JSON."""
 from __future__ import annotations
-import html
 import json
-import re
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
+from scraper.util import strip_tags
+
 from .base import Platform
-
-_TAGS = re.compile(r'<[^>]+>')
-
 
 class Squarespace(Platform):
     name = 'squarespace'
@@ -41,7 +38,7 @@ class Squarespace(Platform):
         lat, lon = loc.get('mapLat') or loc.get('markerLat'), loc.get('mapLng') or loc.get('markerLng')
         return {
             'title':            e.get('title'),
-            'description':      _text(e.get('excerpt')) or _text(e.get('body')),
+            'description':      strip_tags(e.get('excerpt')) or strip_tags(e.get('body')),
             'start_datetime':   _ms(e.get('startDate')),
             'end_datetime':     _ms(e.get('endDate')),
             'url':              response.urljoin(e['fullUrl']) if e.get('fullUrl') else None,
@@ -59,11 +56,6 @@ def _ms(value) -> Optional[str]:
         return None
     return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
 
-
-def _text(value) -> Optional[str]:
-    if not value:
-        return None
-    return html.unescape(re.sub(r'\s+', ' ', _TAGS.sub(' ', str(value)))).strip() or None
 
 
 def _with_query(url: str, **params) -> str:

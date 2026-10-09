@@ -1,15 +1,13 @@
 """WordPress + The Events Calendar (Tribe) — public REST API with every upcoming event."""
 from __future__ import annotations
 import json
-import re
 from typing import Optional
+
+from scraper.util import strip_tags
 
 from .base import Platform
 
 _MARKERS = ('/wp-content/plugins/the-events-calendar/', 'tribe-events', '/wp-json/tribe/events/')
-_TAGS = re.compile(r'<[^>]+>')
-
-
 class WordPressTribe(Platform):
     name = 'wordpress_tribe'
 
@@ -41,8 +39,8 @@ class WordPressTribe(Platform):
         image = e.get('image') if isinstance(e.get('image'), dict) else {}
         values = (e.get('cost_details') or {}).get('values') or []
         return {
-            'title':            _text(e.get('title')),
-            'description':      _text(e.get('description')),
+            'title':            strip_tags(e.get('title')),
+            'description':      strip_tags(e.get('description')),
             # UTC fields avoid depending on the site's configured zone.
             'start_datetime':   _utc(e.get('utc_start_date')) or e.get('start_date'),
             'end_datetime':     _utc(e.get('utc_end_date')) or e.get('end_date'),
@@ -50,7 +48,7 @@ class WordPressTribe(Platform):
             'image_url':        image.get('url'),
             'ticket_price':     values[0] if values else (e.get('cost') or None),
             'ticket_url':       e.get('website') or None,
-            'location_title':   _text(venue.get('venue')),
+            'location_title':   strip_tags(venue.get('venue')),
             'location_address': address or None,
             'location_lat':     _float(venue.get('geo_lat')),
             'location_lon':     _float(venue.get('geo_lng')),
@@ -61,12 +59,6 @@ class WordPressTribe(Platform):
 def _utc(value) -> Optional[str]:
     return f"{value.replace(' ', 'T')}+00:00" if value else None
 
-
-def _text(value) -> Optional[str]:
-    if not value:
-        return None
-    import html
-    return re.sub(r'\s+', ' ', html.unescape(_TAGS.sub(' ', str(value)))).strip() or None
 
 
 def _float(value) -> Optional[float]:

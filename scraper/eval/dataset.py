@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from scraper.eval.case import Case
 from scraper.extractors import ai
+from scraper.util import fold
 
 
 def training_record(case: Case) -> tuple[Optional[dict], str]:
@@ -69,15 +70,15 @@ def split_of(case: Case, eval_share: float) -> str:
 
 
 def _evidence(label: dict, text: str) -> Optional[str]:
-    haystack = _norm(text)
-    if label.get('evidence') and _norm(label['evidence']) in haystack:
+    haystack = fold(text)
+    if label.get('evidence') and fold(label['evidence']) in haystack:
         return label['evidence']
-    title = _norm(label.get('title', ''))
+    title = fold(label.get('title', ''))
     if not title:
         return None
     for line in text.splitlines():
         for sentence in re.split(r'(?<=[.!?])\s+', line):
-            if title in _norm(sentence):
+            if title in fold(sentence):
                 return sentence.strip()
     return None
 
@@ -97,7 +98,3 @@ def _local(value, zone: Optional[str]):
     if (local.hour, local.minute) == (0, 0):
         return local.date().isoformat()
     return local.isoformat(timespec='minutes')
-
-
-def _norm(text: str) -> str:
-    return re.sub(r'\s+', ' ', str(text)).strip().lower()

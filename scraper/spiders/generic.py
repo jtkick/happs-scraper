@@ -35,7 +35,7 @@ Per source:
 from __future__ import annotations
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
@@ -56,6 +56,7 @@ from scraper.rendering import raw_retry, render_meta, rendered_after_check
 from scraper.snapshots import SnapshotSampler
 from scraper.sources.client import BackendClient
 from scraper.sources.tracker import RunTracker, SourceRun
+from scraper.util import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +359,7 @@ class GenericEventSpider(scrapy.Spider):
             lastmod=run.lastmod.get(sitemap.key(url)),
             max_age=timedelta(days=self.settings.getfloat('PAGE_MAX_AGE_DAYS', 7)))
         if record:
-            run.pages.update(url, 'detail', last_listed_at=_now())
+            run.pages.update(url, 'detail', last_listed_at=now_iso())
         if reason is None:
             self.tracker.carry(run, record.get('fingerprints') or [], listing_url)
         return reason
@@ -481,7 +482,7 @@ class GenericEventSpider(scrapy.Spider):
                                             version=extraction.EXTRACTION_VERSION):
             logger.info("%s changed but its sitemap lastmod didn't; not trusting lastmod", url)
             self.tracker.learn(run, 'heuristic', lastmod_trusted=False)
-        now = _now()
+        now = now_iso()
         run.pages.update(
             url, 'detail', listing_url=response.meta.get('listing_url') or '',
             listing_data={k: v for k, v in partial.items() if not k.startswith('_')} if partial else None,
@@ -567,7 +568,3 @@ class GenericEventSpider(scrapy.Spider):
         self._flush()
         if self.client:
             self.client.close()
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()

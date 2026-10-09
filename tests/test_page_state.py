@@ -45,11 +45,6 @@ def test_refetch_reason(rec, kwargs, reason):
     assert refetch_reason(rec, version=1, max_age=WEEK, now=NOW, **kwargs) == reason
 
 
-def test_date_only_and_zulu_times_parse():
-    assert page_state.parse_time('2026-10-03') == datetime(2026, 10, 3, tzinfo=timezone.utc)
-    assert page_state.parse_time('2026-10-03T10:46:15Z') == datetime(2026, 10, 3, 10, 46, 15, tzinfo=timezone.utc)
-    assert page_state.parse_time('soon') is None
-
 
 def test_only_changes_are_reported():
     state = PageState([{'url': 'a', 'kind': 'detail', 'listing_hash': 'x'}, {'url': 'b', 'kind': 'listing'}])

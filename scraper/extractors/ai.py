@@ -24,10 +24,12 @@ import functools
 import hashlib
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
+
+from scraper.text import main_text
+from scraper.util import fold
 
 logger = logging.getLogger(__name__)
 
@@ -140,11 +142,11 @@ def extract_many(html: str, base_url: str, api_key: str, *,
     if not data:
         return AIResult(truncated=truncated)
 
-    haystack = _normalize(text)
+    haystack = fold(text)
     events = []
     for event in data.get('events', []):
         clean = {k: v for k, v in event.items() if v not in (None, '')}
-        evidence = _normalize(clean.get('evidence', ''))
+        evidence = fold(clean.get('evidence', ''))
         if not evidence or evidence not in haystack:
             clean['drop_reason'] = 'ai_unverified'
         events.append(clean)
@@ -289,18 +291,4 @@ def _call(api_key: str, system: Optional[str], user: str, schema: dict, label: s
 
 def page_text(html: str) -> Optional[str]:
     """The page text the model sees (tables kept: schedules often live in them)."""
-    try:
-        import trafilatura
-    except ImportError:
-        logger.warning("trafilatura not installed — skipping AI extraction")
-        return None
-    text = trafilatura.extract(html, include_comments=False, include_tables=True)
-    if text and len(text) >= MIN_TEXT_CHARS:
-        return text
-    # trafilatura found no main content (a JS shell): give the model all of the page's text.
-    from scraper.text import full_text
-    return full_text(html) or text
-
-
-def _normalize(text: str) -> str:
-    return re.sub(r'\s+', ' ', str(text)).strip().lower()
+    return main_text(html, tables=True)
