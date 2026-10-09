@@ -23,6 +23,7 @@ import dateparser
 from scrapy.exceptions import DropItem
 
 from scraper import cleaners
+from scraper.items import PAYLOAD_FIELDS, RECURRENCE_DEFAULTS, default
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +73,10 @@ class NormalizePipeline:
         if not isinstance(item.get('tag_names'), list):
             item['tag_names'] = []
 
-        # Recurrence defaults. Spiders set every field, so an unset one is None, not missing.
-        for key, default in (('recurrence_freq', 'none'), ('recurrence_interval', 1),
-                             ('recurrence_byday', []), ('recurrence_month_mode', 'day'),
-                             ('recurrence_until', None), ('recurrence_count', None)):
+        # Spiders set every field, so an unset one is None, not missing.
+        for key in RECURRENCE_DEFAULTS:
             if item.get(key) is None:
-                item[key] = default
+                item[key] = default(key)
 
         # Normalize rdates: parse each entry as a date string
         raw_rdates = item.get('rdates') or []
@@ -363,32 +362,8 @@ class APISubmitPipeline:
 
     @staticmethod
     def _build_payload(item: dict) -> dict:
-        return {
-            'title':                item.get('title'),
-            'description':          item.get('description'),
-            'start_datetime':       item.get('start_datetime'),
-            'end_datetime':         item.get('end_datetime'),
-            'location_title':       item.get('location_title'),
-            'location_address':     item.get('location_address'),
-            'location_lat':         item.get('location_lat'),
-            'location_lon':         item.get('location_lon'),
-            'ticket_price':         item.get('ticket_price'),
-            'ticket_url':           item.get('ticket_url'),
-            'url':                  item.get('url') or item.get('source_url'),
-            'image_url':            item.get('image_url'),
-            'tag_names':            item.get('tag_names', []),
-            'source_id':            item.get('source_id'),
-            'source_url':           item.get('source_url'),
-            'source_fingerprint':   item.get('fingerprint'),
-            'extraction_method':    item.get('extraction_method'),
-            'confidence':           item.get('confidence'),
-            'review_required':      bool(item.get('review_required')),
-            'recurrence_freq':      item.get('recurrence_freq', 'none'),
-            'recurrence_interval':  item.get('recurrence_interval', 1),
-            'recurrence_byday':     item.get('recurrence_byday', []),
-            'recurrence_month_mode': item.get('recurrence_month_mode', 'day'),
-            'recurrence_until':     item.get('recurrence_until'),
-            'recurrence_count':     item.get('recurrence_count'),
-            'rdates':               item.get('rdates', []),
-            'exdates':              item.get('exdates', []),
-        }
+        payload = {key: item.get(key, default(key)) for key in PAYLOAD_FIELDS}
+        payload['url'] = item.get('url') or item.get('source_url')
+        payload['source_fingerprint'] = item.get('fingerprint')
+        payload['review_required'] = bool(item.get('review_required'))
+        return payload

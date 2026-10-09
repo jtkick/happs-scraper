@@ -16,12 +16,12 @@ from scraper.eval.case import (
 )
 from scraper.eval.compare import compare
 from scraper.eval.run import run_case
+from scraper.items import RECURRENCE_DEFAULTS
 
 USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
 
-_RECURRENCE = ('recurrence_freq', 'recurrence_interval', 'recurrence_byday',
-               'recurrence_month_mode', 'recurrence_until', 'recurrence_count')
+_RECURRENCE = tuple(RECURRENCE_DEFAULTS)
 
 
 class FetchError(Exception):

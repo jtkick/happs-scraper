@@ -1,3 +1,10 @@
+"""
+The event item and the one list of its fields: what a spider fills
+(EVENT_FIELDS), what goes to the backend (PAYLOAD_FIELDS), and the defaults
+for recurrence and list fields. Add a field here, then in EventItem.
+"""
+import copy
+
 import scrapy
 
 
@@ -42,15 +49,36 @@ class EventItem(scrapy.Item):
     ingest_status       = scrapy.Field()   # 'created' | 'updated' | 'unchanged' | 'failed' (APISubmitPipeline)
 
 
+# A recurrence field left unset means this (the backend Event model's defaults).
+RECURRENCE_DEFAULTS = {
+    'recurrence_freq': 'none', 'recurrence_interval': 1, 'recurrence_byday': [],
+    'recurrence_month_mode': 'day', 'recurrence_until': None, 'recurrence_count': None,
+}
+LIST_FIELDS = ('tag_names', 'rdates', 'exdates')
+
 # The fields a spider fills from an extracted event; the rest are set by the pipelines.
 EVENT_FIELDS = (
     'title', 'description', 'start_datetime', 'end_datetime',
     'location_title', 'location_address', 'location_lat', 'location_lon',
     'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
-    'recurrence_freq', 'recurrence_interval', 'recurrence_byday',
-    'recurrence_month_mode', 'recurrence_until', 'recurrence_count',
+    *RECURRENCE_DEFAULTS,
     'rdates', 'exdates', 'timezone', 'evidence', 'drop_reason',
 )
+
+# Sent to the backend's upsert (APISubmitPipeline). `url` falls back to source_url,
+# and `fingerprint` goes as source_fingerprint.
+PAYLOAD_FIELDS = (
+    'title', 'description', 'start_datetime', 'end_datetime',
+    'location_title', 'location_address', 'location_lat', 'location_lon',
+    'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
+    'source_id', 'source_url', 'extraction_method', 'confidence', 'review_required',
+    *RECURRENCE_DEFAULTS, 'rdates', 'exdates',
+)
+
+
+def default(name: str):
+    """A field's value when unset: its recurrence default, [] for a list field, else None."""
+    return [] if name in LIST_FIELDS else copy.copy(RECURRENCE_DEFAULTS.get(name))
 
 
 def event_item(data: dict, *, source_url: str, source_id=None) -> EventItem:

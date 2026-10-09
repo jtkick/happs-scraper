@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from scraper.items import EVENT_FIELDS
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES_DIR = ROOT / 'tests' / 'fixtures'
 INBOX_DIR = ROOT / 'review' / 'inbox'
@@ -33,14 +35,7 @@ KINDS = ('listing', 'detail')
 SOURCES = ('manual', 'crawl', 'correction', 'report')
 
 # Fields a label may assert, in the order the review app shows them.
-LABEL_FIELDS = [
-    'title', 'description', 'start_datetime', 'end_datetime',
-    'location_title', 'location_address', 'location_lat', 'location_lon',
-    'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
-    'recurrence_freq', 'recurrence_interval', 'recurrence_byday',
-    'recurrence_month_mode', 'recurrence_until', 'recurrence_count',
-    'rdates', 'exdates', 'evidence',
-]
+LABEL_FIELDS = [f for f in EVENT_FIELDS if f not in ('timezone', 'drop_reason')]
 
 
 @dataclass
