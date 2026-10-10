@@ -5,9 +5,10 @@ Every test passes an explicit `year_hint` or an in-text year so results do not
 drift as the real calendar advances — `_best_year` otherwise resolves bare
 month/day pairs against today's date.
 """
-from datetime import date
+from datetime import date, datetime
 
 import pytest
+import time_machine
 
 from scraper.extractors import dates
 
@@ -171,3 +172,81 @@ def test_parse_date_rejects_times_and_non_dates(text):
 
 def test_range_across_months_is_not_a_date_list():
     assert dates.extract('Dates: September 30, 2026 - October 31, 2026') is None
+
+
+# ── Informal dates and times ──────────────────────────────────────────────────
+
+# A Friday noon UTC; 2026-05-28 is a Thursday and 2027-05-28 a Friday.
+TODAY = datetime(2026, 10, 9, 12, 0)
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('7pm', (19, 0, None, None)),
+    ('Doors 7:30 PM', (19, 30, None, None)),
+    ('DJ Fern live. 8–11pm.', (20, 0, 23, 0)),
+    ('Time Travel House Party. 9pm–1am.', (21, 0, 1, 0)),
+    ('doors at 7:30 | show at 8', (20, 0, None, None)),
+    ('6:30 doors, 7 show\n18+', (19, 0, None, None)),
+    ('Thursdays at 8', (20, 0, None, None)),
+    ('Brunch at 10', (10, 0, None, None)),
+    ('Starts 19:30', (19, 30, None, None)),
+    ('Live music 7-10pm', (19, 0, 22, 0)),
+])
+def test_find_time(text, expected):
+    assert dates.find_time(text) == expected
+
+
+@pytest.mark.parametrize('text', ['Open 24/7', 'Tickets at 8 locations', 'Shows 18+', 'Our 2nd show!', 'I am here'])
+def test_find_time_ignores_numbers_that_arent_times(text):
+    assert dates.find_time(text) is None
+
+
+@time_machine.travel(TODAY, tick=False)
+@pytest.mark.parametrize('text, expected', [
+    ('Thursday 5/28', date(2026, 5, 28)),
+    ('Friday 5/28', date(2027, 5, 28)),
+    ('Saturday, January 9', date(2027, 1, 9)),
+    ('Monday 5/28', None),
+])
+def test_a_stated_weekday_picks_the_year(text, expected):
+    assert dates.parse_date(text) == expected
+
+
+@time_machine.travel(TODAY, tick=False)
+@pytest.mark.parametrize('text, start', [
+    ('January 9th, 2027 | 6:30 doors, 7 show', '2027-01-09T19:00:00'),
+    ('POP-PUNK TRIBUTE FEST\nSaturday, January 9\n6:30 doors, 7 show\n18+', '2027-01-09T19:00:00'),
+    ('we\u2019re back for a 2nd show! on Thursday 5/28!\n(1) a displayed timer\n(2) more\nit\u2019s chaotic\n'
+     'once it\u2019s full\u2026 it\u2019s full.\ndoors at 7:30 | show at 8', '2026-05-28T20:00:00'),
+    ('Book Club\nOctober 24th', '2026-10-24'),
+])
+def test_find_start(text, start):
+    assert dates.find_start(text)['start_datetime'] == start
+
+
+@time_machine.travel(TODAY, tick=False)
+def test_find_start_takes_the_date_after_the_title():
+    text = 'Next up: Karaoke, Sat 10/10 9pm\nPunk Fest\nSaturday, January 9 at 7pm\nMore shows: Fri 10/16 8pm'
+    assert dates.find_start(text, title='Punk Fest')['start_datetime'] == '2027-01-09T19:00:00'
+
+
+@time_machine.travel(TODAY, tick=False)
+def test_find_start_needs_a_date():
+    assert dates.find_start('Thursdays at 8. Open 24/7, 1/2 off wings.') is None
+
+
+@time_machine.travel(TODAY, tick=False)
+def test_next_occurrence():
+    assert dates.next_occurrence(['TH'], (20, 0, None, None), 'UTC') == {'start_datetime': '2026-10-15T20:00:00'}
+    assert dates.next_occurrence(['FR'], (20, 0, 23, 0), 'UTC') == {
+        'start_datetime': '2026-10-09T20:00:00', 'end_datetime': '2026-10-09T23:00:00'}
+    assert dates.next_occurrence(['FR'], (10, 0, None, None), 'UTC')['start_datetime'] == '2026-10-16T10:00:00'
+    assert dates.next_occurrence(['FR'], tz='UTC') == {'start_datetime': '2026-10-09'}
+    assert dates.next_occurrence(['3TU']) is None
+
+
+@time_machine.travel(datetime(2026, 10, 10, 2, 0), tick=False)
+def test_next_occurrence_is_in_the_events_zone():
+    # 02:00 UTC Saturday is still Friday evening in New York.
+    assert dates.next_occurrence(['FR'], (22, 0, None, None), 'America/New_York')['start_datetime'] == \
+        '2026-10-09T22:00:00'

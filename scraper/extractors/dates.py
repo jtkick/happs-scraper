@@ -15,8 +15,9 @@ Returns any subset of:
 """
 from __future__ import annotations
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # ── Month tables ───────────────────────────────────────────────────────────────
 
@@ -327,18 +328,43 @@ def _parse_exceptions(text: str, year_hint: Optional[int]) -> list[dict]:
 
 # ── Single date  "October 31, 2026" / "31 Oct" / "10/31/2026" / "2026-10-31" ────
 
-_ISO_DATE_RE = re.compile(r'^(20\d{2})-(\d{1,2})-(\d{1,2})\b')
-_MDY_RE = re.compile(r'^(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?\b(?!\s*(?:[ap]\.?m\b|:))', re.IGNORECASE)
-_MONTH_FIRST_RE = re.compile(
-    r'^(?:(?:' + _WD_PAT + r')\.?,?\s+)?(' + _MON_PAT + r')\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b'
-    r'(?!\s*(?:[ap]\.?m\b|:))(?:,?\s*(20\d{2}))?',
-    re.IGNORECASE,
-)
-_DAY_FIRST_RE = re.compile(
-    r'^(?:(?:' + _WD_PAT + r')\.?,?\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(' + _MON_PAT + r')\b\.?'
-    r'(?:,?\s*(20\d{2}))?',
-    re.IGNORECASE,
-)
+_WEEKDAY_PREFIX = r'(?:(?P<wd>' + _WD_PAT + r')\.?,?\s+)?'
+_DATE_FORMS = [
+    ('iso', r'(?P<y>20\d{2})-(?P<m>\d{1,2})-(?P<d>\d{1,2})\b'),
+    ('month_first', _WEEKDAY_PREFIX + r'(?P<mon>' + _MON_PAT + r')\.?\s+(?P<d>\d{1,2})(?:st|nd|rd|th)?\b'
+                    r'(?!\s*(?:[ap]\.?m\b|:))(?:,?\s*(?P<y>20\d{2}))?'),
+    ('day_first', _WEEKDAY_PREFIX + r'(?P<d>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<mon>' + _MON_PAT + r')\b\.?'
+                  r'(?:,?\s*(?P<y>20\d{2}))?'),
+    ('mdy', _WEEKDAY_PREFIX + r'(?P<m>\d{1,2})/(?P<d>\d{1,2})(?:/(?P<y>\d{2}|\d{4}))?\b(?!\s*(?:[ap]\.?m\b|:))'),
+]
+_DATE_AT_START = [(form, re.compile('^' + body, re.IGNORECASE)) for form, body in _DATE_FORMS]
+_DATE_ANYWHERE = [(form, re.compile(r'(?<![\w/])' + body, re.IGNORECASE)) for form, body in _DATE_FORMS]
+
+_WEEKDAY_INDEX = {'mon': 0, 'tue': 1, 'wed': 2, 'thu': 3, 'fri': 4, 'sat': 5, 'sun': 6}
+_RRULE_INDEX = {'MO': 0, 'TU': 1, 'WE': 2, 'TH': 3, 'FR': 4, 'SA': 5, 'SU': 6}
+
+
+def _date_from(m: re.Match, year_hint: Optional[int]) -> Optional[date]:
+    """
+    A matched date. A stated weekday picks the year when none is printed
+    ("Thursday 5/28" is the 5/28 that's a Thursday), and a weekday no nearby
+    year agrees with means it isn't a date.
+    """
+    g = m.groupdict()
+    month = _MONTH[g['mon'].lower()] if g.get('mon') else int(g['m'])
+    day = int(g['d'])
+    year = int(g['y']) + (2000 if len(g['y']) == 2 else 0) if g.get('y') else None
+    try:
+        if year:
+            return date(year, month, day)
+        if g.get('wd') and not year_hint:
+            weekday = _WEEKDAY_INDEX[g['wd'][:3].lower()]
+            today = date.today()
+            return next((d for y in (today.year, today.year + 1, today.year - 1)
+                         if (d := date(y, month, day)).weekday() == weekday), None)
+        return date(_best_year(month, day, year_hint), month, day)
+    except ValueError:
+        return None
 
 
 def parse_date(text: str, year_hint: Optional[int] = None) -> Optional[date]:
@@ -347,25 +373,177 @@ def parse_date(text: str, year_hint: Optional[int] = None) -> Optional[date]:
     else its nearest future occurrence. Numeric dates are read US-style (M/D).
     """
     text = text.strip()
-    month = day = year = None
-    if m := _ISO_DATE_RE.match(text):
-        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    elif m := _MONTH_FIRST_RE.match(text):
-        month, day = _MONTH[m.group(1).lower()], int(m.group(2))
-        year = int(m.group(3)) if m.group(3) else None
-    elif m := _DAY_FIRST_RE.match(text):
-        day, month = int(m.group(1)), _MONTH[m.group(2).lower()]
-        year = int(m.group(3)) if m.group(3) else None
-    elif m := _MDY_RE.match(text):
-        month, day = int(m.group(1)), int(m.group(2))
-        if m.group(3):
-            year = int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
-    if month is None:
+    for _, pattern in _DATE_AT_START:
+        if m := pattern.match(text):
+            return _date_from(m, year_hint)
+    return None
+
+
+def find_dates(text: str) -> list[tuple[date, int, int]]:
+    """
+    Every date in `text` in order, with where each starts and ends. A bare
+    numeric date ("3/4") counts only with a weekday or a year, so fractions
+    and "24/7" don't.
+    """
+    found = []
+    for form, pattern in _DATE_ANYWHERE:
+        for m in pattern.finditer(text):
+            if form == 'mdy' and not (m.group('wd') or m.group('y')):
+                continue
+            if day := _date_from(m, None):
+                found.append((m.start(), -m.end(), day))
+    dates, taken = [], -1
+    for at, end, day in sorted(found):
+        if at >= taken:
+            dates.append((day, at, -end))
+            taken = -end
+    return dates
+
+
+def find_date(text: str) -> Optional[tuple[date, int, int]]:
+    """The first date anywhere in `text` (see find_dates)."""
+    found = find_dates(text)
+    return found[0] if found else None
+
+
+# ── Times  "7pm" / "8–11pm" / "show at 8" / "6:30 doors, 7 show" ───────────────
+
+_AMPM = r'(?:a\.?m\b\.?|p\.?m\b\.?|noon)'
+_CLOCK = r'(\d{1,2})(?::(\d{2}))?'
+_START_WORD = r'(?:show(?:time|s)?|music|starts?|begins?)'
+_DOORS_WORD = r'doors?(?:[ \t]+open)?'
+
+
+def _word_time(word: str) -> re.Pattern:
+    """A time said with `word` before or after it: "show at 8", "7 show", "Doors: 7pm"."""
+    return re.compile(
+        r'(?<![\d:/])' + _CLOCK + r'[ \t]*(' + _AMPM + r')?[ \t]*' + word + r'\b'
+        r'|\b' + word + r'[ \t]*(?:at|@|:|-)?[ \t]*' + _CLOCK + r'[ \t]*(' + _AMPM + r')?(?![\d/+%:])',
+        re.IGNORECASE,
+    )
+
+
+_START_TIME = _word_time(_START_WORD)
+_DOORS_TIME = _word_time(_DOORS_WORD)
+_ONE_TIME = re.compile(r'(?<![\d:/])' + _CLOCK + r'[ \t]*(' + _AMPM + r')', re.IGNORECASE)
+_TWENTY_FOUR = re.compile(r'(?<![\d:/])(1[3-9]|2[0-3]):([0-5]\d)(?![\d:])')
+# "at 8" only at the end of a phrase: "at 8 locations" isn't a time.
+_AT_TIME = re.compile(r'(?:\bat|@)[ \t]*' + _CLOCK + r"(?=[ \t]*(?:$|[|,.;!)–—-]|o'?clock))",
+                      re.IGNORECASE | re.MULTILINE)
+_MORNING = re.compile(r'\b(?:morning|brunch|breakfast)\b', re.IGNORECASE)
+
+
+def _hour(hour: int, period: Optional[str], text: str) -> int:
+    """24-hour; a bare hour is evening unless the text talks about the morning."""
+    if period:
+        return 12 if period.lower() == 'noon' else _to24(hour, period)
+    if hour == 0 or hour >= 12:
+        return hour
+    return hour if _MORNING.search(text) else hour + 12
+
+
+def _clock(m: re.Match, text: str, offset: int = 0) -> tuple[int, int]:
+    hour, minute, period = m.group(1 + offset), m.group(2 + offset), m.group(3 + offset)
+    return _hour(int(hour), period, text), int(minute or 0)
+
+
+def find_time(text: str) -> Optional[tuple[int, int, Optional[int], Optional[int]]]:
+    """
+    (start_h, start_m, end_h, end_m) of the first time `text` gives, end None
+    when it gives only a start. The show time beats the doors time.
+    """
+    for pattern in (_START_TIME, _DOORS_TIME):
+        if m := pattern.search(text):
+            h, mi = _clock(m, text, 0 if m.group(1) else 3)
+            ranged = _parse_time_range(text[m.start(4) if m.group(4) else m.start():m.end() + 16])
+            if ranged and ranged[:2] == (h, mi):
+                return ranged
+            if 0 <= h < 24 and mi < 60:
+                return h, mi, None, None
+    if found := _parse_time_range(text):
+        return found
+    for m in _ONE_TIME.finditer(text):
+        h, mi = _clock(m, text)
+        if 0 <= h < 24 and mi < 60:
+            return h, mi, None, None
+    if m := _TWENTY_FOUR.search(text):
+        return int(m.group(1)), int(m.group(2)), None, None
+    for m in _AT_TIME.finditer(text):
+        hour, minute = int(m.group(1)), int(m.group(2) or 0)
+        if 0 < hour <= 12 and minute < 60:
+            return _hour(hour, None, text), minute, None, None
+    return None
+
+
+def _times(day: date, clock: Optional[tuple]) -> dict:
+    if not clock:
+        return {'start_datetime': day.isoformat()}
+    sh, sm, eh, em = clock
+    start = datetime(day.year, day.month, day.day, sh, sm)
+    result = {'start_datetime': start.strftime('%Y-%m-%dT%H:%M:%S')}
+    if eh is not None:
+        end = datetime(day.year, day.month, day.day, eh, em)
+        if end <= start:
+            end += timedelta(days=1)
+        result['end_datetime'] = end.strftime('%Y-%m-%dT%H:%M:%S')
+    return result
+
+
+# How far past the title a single event's date is looked for; further on are other events.
+DATE_WINDOW = 3000
+
+
+def after_title(text: str, title: Optional[str]) -> str:
+    """The page text from the title's first appearance (else the top), DATE_WINDOW long."""
+    at = text.lower().find(title.strip().lower()) if title and title.strip() else -1
+    return text[max(at, 0):][:DATE_WINDOW]
+
+
+def at_most_one_day(text: str, title: Optional[str] = None) -> bool:
+    """
+    Does the text after the title name one day, or none? A page naming several
+    is a listing or carries other events, and one of them can't be picked blind.
+    """
+    return len({day for day, _, _ in find_dates(after_title(text, title))}) <= 1
+
+
+def find_start(text: str, title: Optional[str] = None) -> Optional[dict]:
+    """
+    One event's date and time from its own text: the first date after the
+    title, with the time on its own line or the next few, else further down
+    ("Thursday 5/28" … "doors at 7:30 | show at 8"). Returns start/end, or None.
+    """
+    region = after_title(text, title)
+    found = find_date(region)
+    if not found:
         return None
-    try:
-        return date(year or _best_year(month, day, year_hint), month, day)
-    except ValueError:
+    day, start, end = found
+    line = region.rfind('\n', 0, start) + 1
+    near_end = end
+    for _ in range(3):
+        nl = region.find('\n', near_end + 1)
+        near_end = nl if nl >= 0 else len(region)
+    clock = find_time(region[line:near_end]) or find_time(region[end:])
+    return _times(day, clock)
+
+
+def next_occurrence(byday: list[str], clock: Optional[tuple] = None, tz: Optional[str] = None) -> Optional[dict]:
+    """
+    The next start on one of `byday` (RRULE codes like "TH") at `clock`, at or
+    after now in `tz`: "Thursdays at 8" seen on a Friday starts next Thursday.
+    """
+    days = {_RRULE_INDEX[code] for code in byday if code in _RRULE_INDEX}
+    if not days:
         return None
+    now = datetime.now(ZoneInfo(tz)).replace(tzinfo=None) if tz else datetime.now()
+    for offset in range(8):
+        day = now.date() + timedelta(days=offset)
+        if day.weekday() not in days:
+            continue
+        if clock and datetime(day.year, day.month, day.day, clock[0], clock[1]) < now:
+            continue
+        return _times(day, clock)
+    return None
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────

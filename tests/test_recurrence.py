@@ -1,5 +1,8 @@
 """Tests for the recurrence extractor — schema.org Schedule first, then text heuristics."""
+from datetime import datetime
+
 import pytest
+import time_machine
 
 from scraper.extractors import recurrence
 
@@ -51,6 +54,32 @@ def test_title_is_searched_too():
 ])
 def test_no_pattern_returns_none(description):
     assert _text(description) is None
+
+
+@pytest.mark.parametrize('description, byday', [
+    ('Thursdays at 8', ['TH']),
+    ('Live jazz Thursdays, 8–11pm', ['TH']),
+    ('Tuesdays & Thursdays from 7pm', ['TU', 'TH']),
+    ('EVERY THU — DJ Fern live', ['TH']),
+])
+def test_plural_days_with_a_time_are_weekly(description, byday):
+    result = _text(description)
+    assert result['recurrence_freq'] == 'weekly' and result['recurrence_byday'] == byday
+
+
+@pytest.mark.parametrize('description', ['Open Thursdays', 'Closed Mondays and Tuesdays', 'Taco Tuesdays are back'])
+def test_plural_days_alone_are_not_a_schedule(description):
+    assert _text(description) is None
+
+
+def test_plural_days_with_a_time_count_in_page_text():
+    page = 'Social Groove\nThursdays at 8 with DJ Fern'
+    assert recurrence.extract('Social Groove', '', page_text=page)['recurrence_byday'] == ['TH']
+
+
+def test_title_days():
+    assert recurrence.from_title_days('Tasting Tuesdays')['recurrence_byday'] == ['TU']
+    assert recurrence.from_title_days('Jazz Night') is None
 
 
 def test_month_mode_only_set_for_monthly():
@@ -171,7 +200,9 @@ def test_written_ordinal_weekday_of_month(phrase, expected):
     ('Every Friday, 5-9pm, until 10/31/2026', 'weekly', ['FR'], '2026-10-31'),
     ('Tuesdays & Thursdays every week', None, None, None),
     ('Every Tues and Thurs', 'weekly', ['TU', 'TH'], None),
+    ('Fridays Sep 18th – Oct 23rd 10:15AM-11AM', 'weekly', ['FR'], '2026-10-23'),
 ])
+@time_machine.travel(datetime(2026, 10, 9, 12, 0), tick=False)
 def test_recurrence_phrases_with_until(text, freq, byday, until):
     result = _text(text)
     if freq is None:

@@ -56,6 +56,10 @@ class NormalizePipeline:
         if not raw_title:
             raise DropItem("missing_title")
 
+        # Nothing found (often a page that isn't an event) is reported apart
+        # from a start that was found but couldn't be read.
+        if not item.get('start_datetime'):
+            raise DropItem(f"missing_start: {raw_title}")
         tz = item.get('timezone') or self.default_timezone
         start = self._parse_date(item.get('start_datetime'), tz)
         if not start:

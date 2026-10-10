@@ -84,6 +84,15 @@ def extract(title: str, description: str, jsonld_node: Optional[dict] = None,
     return None
 
 
+def from_title_days(title: str) -> Optional[dict]:
+    """
+    Weekly on the plural days a title names ("Tasting Tuesdays"). Too loose
+    for event text, so it's only asked about events that have no date at all.
+    """
+    days = _days(' '.join(re.findall(_PLURAL_DAY, (title or '').lower())))
+    return _build('weekly', byday=days) if days else None
+
+
 def _near_title(text: str, title: str, occurrences: int = 3) -> str:
     """The text after each of the title's first few appearances (page heading, embedded data)."""
     lower, needle = text.lower(), title.strip().lower()
@@ -193,6 +202,18 @@ _NEW_SENTENCE = re.compile(r'[.!?]\s+[A-Z]|\n')
 _COUNT = re.compile(r'\bfor\s+' + _NUMBER + r'\s+(day|night|week|month|year)s?\b', re.IGNORECASE)
 _COUNT_UNIT = {'daily': ('day', 'night'), 'weekly': ('week',), 'monthly': ('month',), 'yearly': ('year',)}
 
+# "Thursdays at 8", "Tuesdays & Thursdays, 7–9pm", "Fridays Sep 18th – Oct 23rd": a plural
+# day is a schedule when a time or a date follows it.
+_PLURAL_DAY = r'\b(?:mon|tues|wednes|thurs|fri|satur|sun)days\b'
+_PLURAL_DAYS = _PLURAL_DAY + r'(?:\s*(?:,|&|/|\band\b)\s*' + _PLURAL_DAY + r')*'
+_PLURAL_SCHEDULE = re.compile(
+    r'(' + _PLURAL_DAYS + r')[ \t]*[,:–—-]?[ \t]*(?:at|from|@|starting(?:\s+at)?)?[ \t]*'
+    r'(?=\d{1,2}(?::\d{2})?[ \t]*(?:[ap]\.?m\b|$|[\s|,.–—-])|noon\b|(?:' + dates_extractor._MON_PAT + r')\.?\s+\d)',
+    re.MULTILINE,
+)
+# "Sep 18th – Oct 23rd" right after the days: the second date is the last one.
+_RUN_END = re.compile(r'\s*(?:–|—|-|\bto\b|\bthrough\b|\bthru\b)\s*', re.IGNORECASE)
+
 _ORDINAL = r'(first|second|third|fourth|fifth|last|\d+(?:st|nd|rd|th))'
 _MONTH_SUFFIX = r'(\s+(?:of\s+(?:each|every|the)\s+month|(?:of\s+)?(?:each|every)\s+month|monthly))'
 
@@ -229,6 +250,8 @@ _PATTERNS: list[tuple[re.Pattern, object, callable]] = [
      lambda m: ('weekly', {'byday': _days(m.group(1))})),
     (re.compile(r'\bevery\s+(' + _DAYS + r')'), True,
      lambda m: ('weekly', {'byday': _days(m.group(1))})),
+    (_PLURAL_SCHEDULE, True,
+     lambda m: ('weekly', {'byday': _days(m.group(1))})),
     (re.compile(r'\b(' + _LEAD + r')?(?:nightly|daily|every\s+(day|night))\b'),
      lambda m: bool(m.group(1) or m.group(2)),
      lambda m: ('daily', {})),
@@ -258,8 +281,19 @@ def _from_text(text: str, strong_only: bool = False) -> Optional[dict]:
                 continue
             freq, kwargs = built
             tail = text[m.end():m.end() + 100]
-            return _build(freq, until=_until(tail), count=_count(tail, freq), **kwargs)
+            return _build(freq, until=_until(tail) or _run_end(tail), count=_count(tail, freq), **kwargs)
     return None
+
+
+def _run_end(tail: str) -> Optional[str]:
+    """The last day of a run printed right after the schedule: "Fridays Sep 18th – Oct 23rd"."""
+    found = dates_extractor.find_date(tail)
+    if not found or tail[:found[1]].strip():
+        return None
+    rest = tail[found[2]:]
+    sep = _RUN_END.match(rest)
+    last = dates_extractor.parse_date(rest[sep.end():]) if sep else None
+    return last.isoformat() if last else None
 
 
 def _until(tail: str) -> Optional[str]:

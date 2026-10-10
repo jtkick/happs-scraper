@@ -32,6 +32,7 @@ finalize(data, ...)  → dict | None
 from __future__ import annotations
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional
@@ -55,7 +56,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 1
+EXTRACTION_VERSION = 2
 
 
 @dataclass
@@ -99,7 +100,8 @@ def _parse_steps(response, kind, recipe, context, partial, use_ai):
     elif partial and sufficient(partial):
         use_ai = False
     result = yield from _extract_steps(response.text, response.url, recipe_events, use_ai)
-    return result, finalize_page(result, response.text, context=context, partial=partial)
+    return result, finalize_page(result, response.text, context=context, partial=partial,
+                                 guess_start=not (kind == 'listing' and result.single))
 
 
 def _run(steps, ask):
@@ -223,6 +225,7 @@ def finalize(
     jsonld_node: Optional[dict] = None,
     page_text: Optional[str] = None,
     full_text: Optional[str] = None,
+    guess_start: bool = True,
 ) -> Optional[dict]:
     """
     Page data wins; the listing partial (this same event as seen on its
@@ -231,6 +234,8 @@ def finalize(
 
     `page_text` is the page's main content (for dates); `full_text` is all of
     it (for recurrence phrases near the title). Both only on single-event pages.
+    `guess_start` lets a start be read from loose text (_fill_start); off for a
+    listing page that came out as one event, which is the page, not an event.
     """
     data = dict(data)
     for key, value in (partial or {}).items():
@@ -245,13 +250,19 @@ def finalize(
     if not data.get('title'):
         return None
 
-    rec = recurrence_extractor.extract(
+    # A start that names no date ("EVERY THU 8–11pm" from a recipe) is a schedule,
+    # and so is the AI's evidence for an event it dated from one.
+    undated = _undated(data.get('start_datetime'))
+    own_text = dict(
         title=data.get('title', ''),
-        description=data.get('description', ''),
+        description=' '.join(filter(None, [data.get('description'), data.get('evidence'), undated])),
         jsonld_node=jsonld_node,
         schedule_text=data.get('_schedule_text'),
-        page_text=full_text,
     )
+    rec = recurrence_extractor.extract(**own_text)
+    rec_from_page = not rec and bool(full_text)
+    if rec_from_page:
+        rec = recurrence_extractor.extract(**own_text, page_text=full_text)
     for key, value in (rec or {}).items():
         if not data.get(key):
             data[key] = value
@@ -276,6 +287,12 @@ def finalize(
             data['exdates'] += [e for e in date_info['exdates'] if e['datetime'] not in seen]
         break
 
+    # A page naming several days is a listing or shows other events: its text
+    # can't say which date, or whose schedule, is this event's.
+    if guess_start:
+        one_event = bool(page_text) and dates_extractor.at_most_one_day(page_text, data.get('title'))
+        _fill_start(data, page_text if one_event else None, undated,
+                    weekly_ok=one_event or not rec_from_page)
     _fit_recurrence_span(data)
 
     matched = tag_matcher.match(data.get('title', ''), data.get('description', ''), ctx=data)
@@ -284,7 +301,7 @@ def finalize(
 
 
 def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = None,
-                  partial: Optional[dict] = None) -> list[dict]:
+                  partial: Optional[dict] = None, guess_start: bool = True) -> list[dict]:
     """
     Every event a spider emits for one page: each extracted event finalized,
     or the listing partial alone when the page itself yielded nothing.
@@ -294,7 +311,7 @@ def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = No
     events = []
     for data, node in result.events:
         final = finalize(data, context=context, partial=partial, jsonld_node=node,
-                         page_text=text, full_text=full)
+                         page_text=text, full_text=full, guess_start=guess_start)
         if final is None:
             logger.debug("Extracted event without a title — skipping")
             continue
@@ -304,6 +321,46 @@ def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = No
         if final:
             events.append(final)
     return events
+
+
+def _undated(start) -> Optional[str]:
+    """`start` when it's text with no date in it, else None."""
+    if not isinstance(start, str) or re.match(r'\s*\d{4}-\d{2}-\d{2}', start):
+        return None
+    return None if dates_extractor.find_date(start) else start
+
+
+def _fill_start(data: dict, page_text: Optional[str], undated: Optional[str], weekly_ok: bool = True) -> None:
+    """
+    The last try for an event's start. A dated one from its own text (one date
+    and an informal time: "January 9th | 6:30 doors, 7 show"); failing that,
+    a weekly one's next occurrence ("Thursdays at 8" seen on a Friday starts
+    next Thursday), its days from the event's schedule or, with nothing else
+    to go on, its title ("Tasting Tuesdays").
+    """
+    if data.get('start_datetime') and not undated:
+        return
+    texts = [data.get('_schedule_text'), data.get('description'), data.get('evidence')]
+    found = None
+    if not undated:
+        found = next(filter(None, (dates_extractor.find_start(text, data.get('title'))
+                                   for text in filter(None, [page_text, *texts]))), None)
+    if not found:
+        if data.get('recurrence_freq') in (None, 'none'):
+            if undated:
+                return
+            for key, value in (recurrence_extractor.from_title_days(data.get('title')) or {}).items():
+                data[key] = value
+        if data.get('recurrence_freq') != 'weekly' or not weekly_ok:
+            return
+        page = dates_extractor.after_title(page_text, data.get('title')) if page_text else None
+        clock = next(filter(None, map(dates_extractor.find_time, filter(None, [undated, *texts, page]))), None)
+        found = dates_extractor.next_occurrence(data.get('recurrence_byday') or [], clock, data.get('timezone'))
+        if not found:
+            return
+    data['start_datetime'] = found['start_datetime']
+    if found.get('end_datetime') and not data.get('end_datetime'):
+        data['end_datetime'] = found['end_datetime']
 
 
 _PERIOD_DAYS = {'daily': 1, 'weekly': 7, 'monthly': 28, 'yearly': 365}

@@ -88,13 +88,18 @@ You extract upcoming public events from the text of a web page for an event-disc
 
 Rules:
 - Return every distinct event or event date listed on the page. A listing page may hold dozens.
-- An event needs a name and a specific start date. Skip opening hours, menus, specials without a date, \
+- An event needs a name and a start date. Skip opening hours, happy hours, menus, daily specials, \
 gift cards, private-hire offers and past events.
+- A named event that repeats on a weekday is an event even without a date ("Thursdays at 8", \
+"every Tue", "EVERY THU 8–11pm", "Fridays Sep 18 – Oct 23"): give its next occurrence on or after \
+today's date as start_datetime.
 - start_datetime / end_datetime: ISO-8601 local time exactly as the page states it, WITHOUT a UTC \
 offset unless the page prints one (e.g. 2026-06-15T19:00). If no time is given, use the date only \
-(2026-06-15). If the year is missing, choose the next occurrence on or after today's date.
-- evidence: copy, verbatim, the shortest span of page text that states the event's date and time. \
-Do not paraphrase it.
+(2026-06-15). A time without am/pm ("doors at 7:30 | show at 8") is evening; the show time, not \
+the doors time, is the start. If the year is missing, choose the next occurrence on or after \
+today's date, unless a weekday is given: then choose the year in which that date falls on that weekday.
+- evidence: copy, verbatim, the shortest span of page text that states the event's date and time \
+(for a repeating event, its schedule, e.g. "EVERY THU 8–11pm"). Do not paraphrase it.
 - ticket_price: the lowest price in the page's currency; 0 for free; null if not stated.
 - Use null for anything the page does not state. Never invent URLs or details."""
 

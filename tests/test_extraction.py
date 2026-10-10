@@ -1,7 +1,9 @@
 """Tests for scraper/extraction.py — page → events, and per-event finalize."""
 import json
+from datetime import datetime
 
 import pytest
+import time_machine
 
 from scraper import extraction
 from scraper.extractors.ai import AIResult
@@ -222,6 +224,75 @@ def test_listing_pages_ignore_page_text_for_recurrence():
         '<body></body>', '<body><p>A</p><p>Recurring daily until October 31, 2026</p></body>')
     events = extraction.finalize_page(extraction.extract_page(page, URL), page)
     assert not any(e.get('recurrence_freq') for e in events)
+
+
+# ── Starts from text ──────────────────────────────────────────────────────────
+
+# Friday noon in New York.
+FRIDAY = datetime(2026, 10, 9, 16, 0)
+NY = 'America/New_York'
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_single_date_and_show_time_from_the_page():
+    text = 'POP-PUNK TRIBUTE FEST 2027\nSaturday, January 9\n6:30 doors, 7 show\n18+'
+    data = extraction.finalize({'title': 'Pop-Punk Tribute Fest 2027', 'timezone': NY}, page_text=text)
+    assert data['start_datetime'] == '2027-01-09T19:00:00'
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_undated_recipe_start_becomes_the_next_occurrence():
+    data = extraction.finalize({'title': 'The Social Groove', 'start_datetime': 'EVERY THU 8–11pm', 'timezone': NY})
+    assert data['start_datetime'] == '2026-10-15T20:00:00'
+    assert data['end_datetime'] == '2026-10-15T23:00:00'
+    assert data['recurrence_freq'] == 'weekly' and data['recurrence_byday'] == ['TH']
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_weekly_event_without_a_date_starts_on_its_next_day():
+    data = extraction.finalize({'title': 'Trivia', 'description': 'Every Thursday. Teams of up to six, starts at 8.',
+                                'timezone': NY})
+    assert data['start_datetime'] == '2026-10-15T20:00:00'
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_weekly_page_text_without_a_date():
+    text = 'In Between the Curtains\nThursdays at 8\nA live blind dating show.'
+    data = extraction.finalize({'title': 'In Between the Curtains', 'timezone': NY}, page_text=text, full_text=text)
+    assert data['start_datetime'] == '2026-10-15T20:00:00' and data['recurrence_byday'] == ['TH']
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_ai_evidence_gives_the_recurrence():
+    data = extraction.finalize({'title': 'Evening Blues', 'start_datetime': '2026-10-14T19:00',
+                                'evidence': 'EVERY WED EVENING BLUES Live blues. Doors at 7pm.'})
+    assert data['recurrence_freq'] == 'weekly' and data['recurrence_byday'] == ['WE']
+    assert data['start_datetime'] == '2026-10-14T19:00'
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_a_title_naming_a_day_is_weekly_only_without_a_date():
+    data = extraction.finalize({'title': 'Tasting Tuesdays', 'description': '5 pours for $15, 5–8pm.',
+                                'timezone': NY})
+    assert data['start_datetime'] == '2026-10-13T17:00:00' and data['recurrence_byday'] == ['TU']
+    dated = extraction.finalize({'title': 'Tasting Tuesdays', 'start_datetime': '2026-10-13T17:00'})
+    assert not dated.get('recurrence_freq')
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_a_listing_that_comes_out_as_one_event_gets_no_guessed_start():
+    html = ('<html><head><meta property="og:title" content="Events at Alcove"></head><body>'
+            '<h1>Events at Alcove</h1><p>Brunch at Alcove every Saturday &amp; Sunday at 10</p>'
+            '<p>Halloween Drag Brunch – October 25th 11AM-2PM</p></body></html>')
+    _, [listing] = extraction.parse_page(page_response(html, URL), kind='listing')
+    _, [detail] = extraction.parse_page(page_response(html, URL), kind='detail')
+    assert not listing.get('start_datetime')
+    assert detail['start_datetime']
+
+
+def test_undated_start_without_a_schedule_is_left_for_normalize():
+    data = extraction.finalize({'title': 'Show', 'start_datetime': 'Tonight 8pm'})
+    assert data['start_datetime'] == 'Tonight 8pm'
 
 
 # ── Detail pages adding information ───────────────────────────────────────────

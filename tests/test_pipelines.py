@@ -45,7 +45,7 @@ def test_unparseable_start_is_dropped(normalize):
 def test_missing_start_is_dropped(normalize):
     item = EventItem()
     item['title'] = 'Jazz Night'
-    with pytest.raises(DropItem):
+    with pytest.raises(DropItem, match='missing_start'):
         normalize.process_item(item, None)
 
 
