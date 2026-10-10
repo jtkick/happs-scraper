@@ -290,6 +290,30 @@ def test_a_listing_that_comes_out_as_one_event_gets_no_guessed_start():
     assert detail['start_datetime']
 
 
+LISTED = ('<body><h1>Upcoming Events</h1>'
+          '<ul><li>Fundraiser Wed, Oct 21</li><li>Spells Sat, Oct 31</li></ul></body>')
+
+
+@time_machine.travel(FRIDAY, tick=False)
+def test_a_listing_that_comes_out_as_one_event_takes_no_dates_from_its_text():
+    html = ('<html><head><meta property="og:title" content="Upcoming Events"></head>'
+            f'{LISTED}</html>')
+    _, [listing] = extraction.parse_page(page_response(html, URL), kind='listing')
+    _, [detail] = extraction.parse_page(page_response(html, URL), kind='detail')
+    assert not listing.get('start_datetime')
+    assert detail['start_datetime']
+
+
+def test_a_listing_asks_the_model_even_with_one_complete_event():
+    ai = fake_ai({'title': 'Fundraiser', 'start_datetime': '2026-10-21T19:00'},
+                 {'title': 'Spells', 'start_datetime': '2026-10-31T12:00'})
+    html = ld_page(ev('Fundraiser', '2026-10-21T19:00')).replace('<body></body>', LISTED)
+    result, events = extraction.parse_page(page_response(html, URL), kind='listing', ai=ai)
+    assert result.strategy == 'ai' and [e['title'] for e in events] == ['Fundraiser', 'Spells']
+    _, [detail] = extraction.parse_page(page_response(html, URL), kind='detail', ai=ai)
+    assert detail['title'] == 'Fundraiser' and len(ai.calls) == 1
+
+
 def test_undated_start_without_a_schedule_is_left_for_normalize():
     data = extraction.finalize({'title': 'Show', 'start_datetime': 'Tonight 8pm'})
     assert data['start_datetime'] == 'Tonight 8pm'

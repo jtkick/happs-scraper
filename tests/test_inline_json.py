@@ -97,6 +97,33 @@ def test_highest_scoring_object_wins():
     assert inline_json.extract(html, URL)['title'] == 'Rich'
 
 
+def test_dates_nested_under_a_schedule_are_read():
+    """Wix Events keeps each event's dates at scheduling.config.startDate."""
+    html = '''<html><body><script type="application/json">
+    {"events": [
+      {"title": "Fundraiser", "description": "Drink pink.", "location": {"name": "The Lackman"},
+       "scheduling": {"config": {"startDate": "2026-10-21T19:00:00.000Z",
+                                 "endDate": "2026-10-22T06:30:00.000Z"}}},
+      {"title": "Spells", "description": "Halloween.", "location": {"name": "The Lackman"},
+       "scheduling": {"config": {"startDate": "2026-10-31T16:00:00.000Z"}}}
+    ]}
+    </script></body></html>'''
+    events = inline_json.extract_all(html, URL)
+    assert [(e['title'], e['start_datetime'], e.get('end_datetime')) for e in events] == [
+        ('Fundraiser', '2026-10-21T19:00:00.000Z', '2026-10-22T06:30:00.000Z'),
+        ('Spells', '2026-10-31T16:00:00.000Z', None),
+    ]
+
+
+def test_an_events_own_start_beats_a_nested_one():
+    html = '''<html><body><script type="application/json">
+    {"name": "Gig", "startDate": "2026-05-01T20:00:00", "venue": "X",
+     "schedule": {"startDate": "2026-01-01T00:00:00", "endDate": "2026-01-01T01:00:00"}}
+    </script></body></html>'''
+    data = inline_json.extract(html, URL)
+    assert data['start_datetime'] == '2026-05-01T20:00:00' and 'end_datetime' not in data
+
+
 # ── Coercion ──────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('raw, expected', [

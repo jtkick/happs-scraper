@@ -10,7 +10,7 @@ extract_page(html, url, ...)  → PageResult
       ≥2 recipe events (learned CSS)   → those
     Single-event pages (details) — the original waterfall, merged field by field
       JSON-LD → inline JSON (always; may lengthen description) → OpenGraph
-      → AI (only if still no title + start date)
+      → AI (only if still no title + start date, or always on a listing page)
     AI may itself return a list, which then replaces the single event.
 
 parse_page(response, kind, ...) → (PageResult, [event])
@@ -56,7 +56,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 2
+EXTRACTION_VERSION = 3
 
 
 @dataclass
@@ -74,7 +74,9 @@ class PageResult:
 def parse_page(response, *, kind: str, recipe: Optional[dict] = None, context: Optional[dict] = None,
                partial: Optional[dict] = None, ai: Optional[Callable] = None) -> tuple[PageResult, list[dict]]:
     """
-    A listing (`kind='listing'`) adds the learned recipe's events to the waterfall.
+    A listing (`kind='listing'`) adds the learned recipe's events to the waterfall,
+    and asks the model even when the waterfall found one complete event, since
+    that may be one of many the page lists.
     A detail page takes `partial`, its listing entry, which fills its gaps; AI is
     skipped when that entry already has a title and start.
     """
@@ -99,9 +101,10 @@ def _parse_steps(response, kind, recipe, context, partial, use_ai):
             recipe_events = recipe_extractor.extract(response, recipe)
     elif partial and sufficient(partial):
         use_ai = False
-    result = yield from _extract_steps(response.text, response.url, recipe_events, use_ai)
+    listing = kind == 'listing'
+    result = yield from _extract_steps(response.text, response.url, recipe_events, use_ai, listing)
     return result, finalize_page(result, response.text, context=context, partial=partial,
-                                 guess_start=not (kind == 'listing' and result.single))
+                                 page_is_event=not (listing and result.single))
 
 
 def _run(steps, ask):
@@ -151,7 +154,7 @@ def extract_page(
     return _run(_extract_steps(html, url, recipe_events, ai is not None), lambda: ai(html, url))
 
 
-def _extract_steps(html, url, recipe_events, use_ai):
+def _extract_steps(html, url, recipe_events, use_ai, listing=False):
     jl_pairs = jsonld.extract_all_with_nodes(html, url)
     if len(jl_pairs) >= 2:
         return PageResult(
@@ -194,7 +197,7 @@ def _extract_steps(html, url, recipe_events, use_ai):
         page.setdefault('extraction_method', 'recipe')
 
     result = PageResult(strategy='waterfall')
-    if not sufficient(page) and use_ai:
+    if use_ai and (listing or not sufficient(page)):
         ai_result = yield
         if ai_result is not None:
             result.ai_used = True
@@ -301,17 +304,21 @@ def finalize(
 
 
 def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = None,
-                  partial: Optional[dict] = None, guess_start: bool = True) -> list[dict]:
+                  partial: Optional[dict] = None, page_is_event: bool = True) -> list[dict]:
     """
     Every event a spider emits for one page: each extracted event finalized,
     or the listing partial alone when the page itself yielded nothing.
+
+    `page_is_event` is off for a listing page that came out as one event: its
+    text lists other events, so it may not supply dates, recurrence or a start.
     """
-    full = text_module.full_text(html) if result.single and result.events else None
-    text = text_module.main_text(html, full=full) if result.single else None
+    page_wide = result.single and page_is_event
+    full = text_module.full_text(html) if page_wide and result.events else None
+    text = text_module.main_text(html, full=full) if page_wide else None
     events = []
     for data, node in result.events:
         final = finalize(data, context=context, partial=partial, jsonld_node=node,
-                         page_text=text, full_text=full, guess_start=guess_start)
+                         page_text=text, full_text=full, guess_start=page_is_event)
         if final is None:
             logger.debug("Extracted event without a title — skipping")
             continue

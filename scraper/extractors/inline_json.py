@@ -70,6 +70,12 @@ _SCORE_ALIASES: frozenset[str] = frozenset(
 
 _MIN_SCORE = 3
 
+# Keys under which some platforms nest an event's dates, e.g. Wix Events'
+# scheduling.config.startDate. Searched up to _DATES_DEPTH levels down.
+_DATE_CONTAINERS: tuple[str, ...] = ('scheduling', 'schedule', 'dates', 'timing', 'config')
+_DATES_DEPTH = 2
+_DATE_FIELDS = ('start_datetime', 'end_datetime')
+
 
 # ── HTML stripping ────────────────────────────────────────────────────────────
 
@@ -157,14 +163,32 @@ def _score(obj: dict) -> int:
     return len(matched)
 
 
+def _nested_dates(obj: dict, depth: int = _DATES_DEPTH) -> dict:
+    """Start/end aliases found under a date container, when obj has no start of its own."""
+    if depth == 0 or any(obj.get(a) is not None for a in _FIELD_ALIASES['start_datetime']):
+        return {}
+    for key in _DATE_CONTAINERS:
+        holder = obj.get(key)
+        if not isinstance(holder, dict):
+            continue
+        if any(holder.get(a) is not None for a in _FIELD_ALIASES['start_datetime']):
+            return {a: holder[a] for f in _DATE_FIELDS for a in _FIELD_ALIASES[f] if holder.get(a) is not None}
+        found = _nested_dates(holder, depth - 1)
+        if found:
+            return found
+    return {}
+
+
 def _find_candidates(data: Any, depth: int = 0) -> Iterator[tuple[int, dict]]:
-    """Recursively yield (score, obj) for event-like dicts."""
+    """Recursively yield (score, obj) for event-like dicts, with any nested dates lifted onto obj."""
     if depth > 12:
         return
     if isinstance(data, dict):
-        s = _score(data)
+        dates = _nested_dates(data)
+        obj = {**dates, **data} if dates else data
+        s = _score(obj)
         if s >= _MIN_SCORE:
-            yield s, data
+            yield s, obj
         for v in data.values():
             yield from _find_candidates(v, depth + 1)
     elif isinstance(data, list):

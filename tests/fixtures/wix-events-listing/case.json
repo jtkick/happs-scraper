@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "url": "https://www.lackmanbar.com/upcomingevents",
+  "kind": "listing",
+  "captured_at": "2026-10-10T06:12:51+00:00",
+  "source": "manual",
+  "seed_context": {
+    "location_title": "The Lackman",
+    "location_address": "1237 Vine Street, Cincinnati, OH, 45202",
+    "timezone": "America/New_York"
+  },
+  "events": [
+    {
+      "title": "Karen Wellington Fundraiser",
+      "start_datetime": "2026-10-21T19:00:00+00:00",
+      "end_datetime": "2026-10-22T06:30:00+00:00",
+      "location_title": "The Lackman"
+    },
+    {
+      "title": "Spells And Spirits",
+      "start_datetime": "2026-10-31T16:00:00+00:00",
+      "end_datetime": "2026-11-01T07:00:00+00:00"
+    },
+    {
+      "title": "Monthly Bourbon Tastings 🥃",
+      "start_datetime": "2026-11-02T23:00:00+00:00",
+      "end_datetime": "2026-11-03T01:00:00+00:00"
+    },
+    {
+      "title": "Thanksgiving Eve",
+      "start_datetime": "2026-11-26T00:00:00+00:00",
+      "end_datetime": "2026-11-26T07:30:00+00:00"
+    },
+    {
+      "title": "Holiday Party",
+      "start_datetime": "2026-12-20T00:00:00+00:00",
+      "end_datetime": "2026-12-20T07:30:00+00:00"
+    },
+    {
+      "title": "SantaCon",
+      "start_datetime": "2026-12-27T00:00:00+00:00",
+      "end_datetime": "2026-12-27T07:30:00+00:00"
+    },
+    {
+      "title": "New Year's Eve",
+      "start_datetime": "2027-01-01T00:00:00+00:00",
+      "end_datetime": "2027-01-01T07:30:00+00:00"
+    }
+  ],
+  "complete": true,
+  "notes": "Wix Events listing: each event's dates are nested at scheduling.config.startDate in the embedded JSON. Was parsed as one event (the first, dated midnight from the page text)."
+}
