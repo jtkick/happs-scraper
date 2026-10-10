@@ -9,10 +9,13 @@ Pull review cases from the backend into review/inbox/:
                      when they did (pinned by the backend, captured on request).
                      A page a curator said lists several events becomes a case
                      whose events still need labelling
+  page reviews       pages a curator checked as a whole: every event the page
+                     produced as they left it, plus any the scraper missed,
+                     as one case (complete when they said that's all of them)
   missed reports     event pages someone said the crawl missed
 
-Snapshots and corrections are marked claimed in the backend so they're
-pulled once; reports are remembered in review/synced.json.
+Snapshots, corrections and page reviews are marked claimed in the backend so
+they're pulled once; reports are remembered in review/synced.json.
 """
 from __future__ import annotations
 import json
@@ -60,6 +63,14 @@ def pull() -> list[str]:
                 _save(case, added)
             client.update_correction(correction['id'], {'status': 'claimed'})
 
+        for page_review in client.page_reviews(status='pending'):
+            if waiting_for_capture(page_review):
+                continue
+            case = page_review_case(page_review, client, api_key)
+            if case is not None:
+                _save(case, added)
+            client.update_page_review(page_review['id'], {'status': 'claimed'})
+
         for report in client.reports():
             key = f"report:{report['id']}"
             if key in seen or report.get('status') in ('fixed', 'wontfix'):
@@ -92,7 +103,7 @@ def snapshot_case(snapshot: dict, html: str) -> Case:
 
 
 def waiting_for_capture(correction: dict, now: datetime | None = None) -> bool:
-    """The page this correction pins hasn't been captured yet, and may still be: leave it till next sync."""
+    """The page this correction (or page review) pins hasn't been captured yet, and may still be: leave it till next sync."""
     snapshot = correction.get('snapshot') or {}
     if snapshot.get('status') != 'requested':
         return False
@@ -100,23 +111,28 @@ def waiting_for_capture(correction: dict, now: datetime | None = None) -> bool:
     return (now or datetime.now(timezone.utc)) - created < CAPTURE_WAIT
 
 
-def correction_case(correction: dict, client: BackendClient, api_key: str):
-    """The corrected event's page, labelled with just that event as a curator or admin left it."""
-    snapshot = correction.get('snapshot')
+def _pinned_case(record: dict, url: str, prefix: str, source: str, client: BackendClient, api_key: str):
+    """A case for the page a correction or review pins, else the live page; None if it can't be fetched."""
+    snapshot = record.get('snapshot')
     html = client.snapshot_html(snapshot['id']) if snapshot else None
+    case_id = _case_id(prefix, url, record['id'])
     if html is not None:
         case = snapshot_case(snapshot, html)
-        case.id = _case_id('fix', correction['source_url'], correction['id'])
-        case.source, case.source_ref = 'correction', correction['id']
-    else:
-        try:
-            html = fetch(correction['source_url'])
-        except FetchError:
-            return None
-        case = new_case(correction['source_url'], html, source='correction',
-                        source_ref=correction['id'], ai='live', api_key=api_key,
-                        seed_context=correction.get('context') or {},
-                        case_id=_case_id('fix', correction['source_url'], correction['id']))
+        case.id, case.source, case.source_ref = case_id, source, record['id']
+        return case
+    try:
+        html = fetch(url)
+    except FetchError:
+        return None
+    return new_case(url, html, source=source, source_ref=record['id'], ai='live', api_key=api_key,
+                    seed_context=record.get('context') or {}, case_id=case_id)
+
+
+def correction_case(correction: dict, client: BackendClient, api_key: str):
+    """The corrected event's page, labelled with just that event as a curator or admin left it."""
+    case = _pinned_case(correction, correction['source_url'], 'fix', 'correction', client, api_key)
+    if case is None:
+        return None
 
     before, after = correction.get('before') or {}, correction.get('after') or {}
     match = _corrected_event(case.parsed.get('events', []) + case.parsed.get('dropped', []), correction)
@@ -143,6 +159,47 @@ def correction_case(correction: dict, client: BackendClient, api_key: str):
         else:
             notes = f"{who} corrected {', '.join(changed)}."
     case.notes = '\n'.join(n for n in (notes, correction.get('notes') or '') if n)
+    return case
+
+
+def page_review_case(page_review: dict, client: BackendClient, api_key: str):
+    """
+    A reviewed page, labelled with every event a curator kept and every one
+    they added as missing. Events read from their own pages are labelled by
+    title only: the listing names them, their details are on pages of their own.
+    """
+    url = page_review['url']
+    case = _pinned_case(page_review, url, 'page', 'page_review', client, api_key)
+    if case is None:
+        return None
+    parsed = case.parsed.get('events', []) + case.parsed.get('dropped', [])
+    entries = page_review.get('events') or []
+    kept = [e for e in entries if e['verdict'] in ('confirm', 'edit', 'checked')]
+    labels = []
+    for entry in kept:
+        if entry.get('read_from') == url:
+            labels.append(correction_label(_corrected_event(parsed, entry), {**entry, 'source_url': url}))
+        else:
+            labels.append({'title': entry['after'].get('title') or entry.get('title', '')})
+    added = [labels_from(label) for label in page_review.get('missing') or []]
+    rejected = [e for e in entries if e['verdict'] == 'reject']
+    unchecked = [e for e in entries if e['verdict'] == 'unchecked']
+
+    case.events = labels + added
+    case.not_events = [e['title'] for e in rejected]
+    case.complete = bool(page_review.get('complete')) and not unchecked
+    who = page_review.get('user') or 'A curator'
+    counts = [f'{len(kept)} kept', f"{sum(e['verdict'] == 'edit' for e in entries)} fixed",
+              f'{len(rejected)} not events', f'{len(added)} missing']
+    taken = [e['title'] for e in entries if e['verdict'] == 'listing']
+    notes = [f"{who} reviewed the whole page: {', '.join(counts)}."
+             + (' They said that’s every event on it.' if case.complete else '')]
+    if any(e.get('read_from') != url for e in kept):
+        notes.append('Events read from their own pages are labelled by title only.')
+    if taken:
+        notes.append(f"The scraper took the page’s list for one event, {', '.join(f'“{t}”' for t in taken)}; "
+                     'that title is often the first real event’s, so it isn’t in not_events.')
+    case.notes = '\n'.join([*notes, page_review.get('notes') or '']).strip()
     return case
 
 

@@ -240,7 +240,7 @@ def fingerprint_text(text) -> str:
 
 
 # Item keys that describe the crawl, not the event.
-_CRAWL_FIELDS = frozenset({'source_url', 'source_id', 'fingerprint', 'ingest_status'})
+_CRAWL_FIELDS = frozenset({'source_url', 'listing_url', 'source_id', 'fingerprint', 'ingest_status'})
 
 
 def dry_run(items, settings=None) -> tuple[list[dict], list[dict]]:

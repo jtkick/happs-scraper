@@ -117,8 +117,9 @@ def test_discard(client, dirs):
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 class FakeBackend:
-    def __init__(self, snapshots=(), corrections=(), html=LISTING, uncaptured=()):
+    def __init__(self, snapshots=(), corrections=(), html=LISTING, uncaptured=(), page_reviews=()):
         self._snapshots, self._corrections, self.html = list(snapshots), list(corrections), html
+        self._page_reviews = list(page_reviews)
         self.uncaptured = set(uncaptured)
         self.updates = []
 
@@ -136,6 +137,12 @@ class FakeBackend:
 
     def update_correction(self, correction_id, data):
         self.updates.append(('correction', correction_id, data))
+
+    def page_reviews(self, status='pending'):
+        return self._page_reviews
+
+    def update_page_review(self, review_id, data):
+        self.updates.append(('page_review', review_id, data))
 
     def reports(self):
         return []
@@ -288,3 +295,54 @@ def test_sync_needs_backend_settings(monkeypatch):
     monkeypatch.delenv('HAPPS_API_BASE', raising=False)
     with pytest.raises(RuntimeError):
         sync_module.pull()
+
+
+def _entry(verdict, parsed=None, read_from=SNAPSHOT['url'], **after):
+    from scraper.pipelines import source_fingerprint
+    before = _event(**({'title': parsed['title'], 'start_datetime': parsed['start_datetime']} if parsed else {}))
+    return {'event': f'ev-{verdict}', 'verdict': verdict, 'read_from': read_from, 'title': before['title'],
+            'fingerprint': source_fingerprint(parsed, 'src-1') if parsed else '', 'before': before,
+            'after': {'not_an_event': True} if verdict == 'reject' else {**before, **after},
+            'changed': sorted(after)}
+
+
+def _page_review(entries, **fields):
+    page_review = {
+        'id': 'review-888888', 'url': SNAPSHOT['url'], 'user': 'sam', 'complete': True, 'notes': 'Two weeks shown',
+        'created_at': '2027-03-15T12:00:00+00:00', 'context': {}, 'events': entries, 'missing': [],
+        'snapshot': {**SNAPSHOT, 'status': 'captured', 'parsed': TWO_JAZZ_NIGHTS},
+    }
+    page_review.update(fields)
+    return page_review
+
+
+def test_sync_turns_a_page_review_into_one_case_for_the_page(dirs, monkeypatch):
+    first, second = TWO_JAZZ_NIGHTS['events']
+    entries = [_entry('confirm', first), _entry('edit', second, ticket_price=12.0),
+               _entry('checked', None, read_from='https://venue.test/e/karaoke', title='Karaoke'),
+               _entry('reject', None, title='Gift Cards')]
+    entries[3]['title'] = 'Gift Cards'
+    missing = {**_event(title='Open Mic', start_datetime='2027-04-09T23:00:00+00:00'), 'url': None}
+    backend = FakeBackend(page_reviews=[_page_review(entries, missing=[missing])])
+    [case_id] = _pull(monkeypatch, backend)
+    case = Case.load(dirs[0] / case_id)
+    assert case.source == 'page_review' and case.source_ref == 'review-888888' and case.complete
+    titles = [e['title'] for e in case.events]
+    assert titles == ['Jazz Night', 'Jazz Night', 'Karaoke', 'Open Mic']
+    assert case.events[0]['image_url'] == 'https://venue.test/a.jpg'      # matched by fingerprint
+    assert (case.events[1]['image_url'], case.events[1]['ticket_price']) == ('https://venue.test/b.jpg', 12.0)
+    assert case.events[2] == {'title': 'Karaoke'}                            # read from its own page
+    assert case.events[3] == {'title': 'Open Mic', 'start_datetime': '2027-04-09T23:00:00+00:00'}
+    assert case.not_events == ['Gift Cards']
+    assert 'sam reviewed the whole page: 3 kept, 1 fixed, 1 not events, 1 missing' in case.notes
+    assert 'Two weeks shown' in case.notes
+    assert backend.updates == [('page_review', 'review-888888', {'status': 'claimed'})]
+
+
+def test_a_page_review_with_events_left_unchecked_is_not_complete(dirs, monkeypatch):
+    first, second = TWO_JAZZ_NIGHTS['events']
+    entries = [_entry('confirm', first), _entry('unchecked', second)]
+    [case_id] = _pull(monkeypatch, FakeBackend(page_reviews=[_page_review(entries)]))
+    case = Case.load(dirs[0] / case_id)
+    assert not case.complete and len(case.events) == 1
+

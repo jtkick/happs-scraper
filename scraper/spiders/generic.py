@@ -541,7 +541,8 @@ class GenericEventSpider(scrapy.Spider):
             fetched_at=now, last_listed_at=now)
 
     def build_item(self, data: dict, response) -> EventItem:
-        return event_item(data, source_url=response.url, source_id=response.meta.get(SOURCE_ID))
+        return event_item(data, source_url=response.url, source_id=response.meta.get(SOURCE_ID),
+                          listing_url=response.meta.get(LISTING_URL))
 
     def _ai_extractor(self, response):
         """The AI callable for extract_page, or None when AI is disabled."""

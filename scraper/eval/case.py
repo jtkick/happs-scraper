@@ -32,7 +32,7 @@ PARSED_FILE = 'parsed.json'
 AI_FILE = 'ai_response.json'
 
 KINDS = ('listing', 'detail')
-SOURCES = ('manual', 'crawl', 'correction', 'report')
+SOURCES = ('manual', 'crawl', 'correction', 'page_review', 'report')
 
 # Fields a label may assert, in the order the review app shows them.
 LABEL_FIELDS = [f for f in EVENT_FIELDS if f not in ('timezone', 'drop_reason')]

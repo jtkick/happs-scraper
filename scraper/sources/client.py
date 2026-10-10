@@ -113,6 +113,12 @@ class BackendClient:
     def update_correction(self, correction_id: str, data: dict) -> Optional[dict]:
         return self._json('PATCH', f'/scraper/corrections/{correction_id}/', json=data)
 
+    def page_reviews(self, status: str = 'pending') -> list[dict]:
+        return self._json('GET', '/scraper/page-reviews/', params={'status': status}) or []
+
+    def update_page_review(self, review_id: str, data: dict) -> Optional[dict]:
+        return self._json('PATCH', f'/scraper/page-reviews/{review_id}/', json=data)
+
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _json(self, method: str, path: str, **kwargs):

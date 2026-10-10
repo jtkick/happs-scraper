@@ -24,7 +24,7 @@ from scraper.util import parse_utc
 # Fields that say how an event was found rather than what it is.
 _HOW_FOUND = frozenset({
     'extraction_method', 'tag_names', 'confidence', 'review_required', 'evidence', 'fingerprint',
-    'source_id', 'source_url', 'ingest_status', 'drop_reason',
+    'source_id', 'source_url', 'listing_url', 'ingest_status', 'drop_reason',
 })
 _EMPTY = (None, '', [], {})
 

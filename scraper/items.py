@@ -38,6 +38,7 @@ class EventItem(scrapy.Item):
 
     # ── Scraper metadata (not forwarded to API) ───────────────────────────────
     source_url          = scrapy.Field()   # listing/detail page that was scraped
+    listing_url         = scrapy.Field()   # the listing a detail page was reached from, if it was
     fingerprint         = scrapy.Field()   # '<source>:<sha256>' — backend upsert key (set by pipeline)
     extraction_method   = scrapy.Field()   # 'jsonld' | 'inline_json' | 'opengraph' | 'recipe' | 'platform:<name>' | 'ai'
     source_id           = scrapy.Field()   # backend Source UUID, when crawled from one
@@ -71,7 +72,7 @@ PAYLOAD_FIELDS = (
     'title', 'description', 'start_datetime', 'end_datetime',
     'location_title', 'location_address', 'location_lat', 'location_lon',
     'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
-    'source_id', 'source_url', 'extraction_method', 'confidence', 'review_required',
+    'source_id', 'source_url', 'listing_url', 'extraction_method', 'confidence', 'review_required',
     *RECURRENCE_DEFAULTS, 'rdates', 'exdates',
 )
 
@@ -81,9 +82,9 @@ def default(name: str):
     return [] if name in LIST_FIELDS else copy.copy(RECURRENCE_DEFAULTS.get(name))
 
 
-def event_item(data: dict, *, source_url: str, source_id=None) -> EventItem:
+def event_item(data: dict, *, source_url: str, source_id=None, listing_url=None) -> EventItem:
     """An extracted event as an item; private (`_`) and unknown keys are left behind."""
-    item = EventItem(source_url=source_url, source_id=source_id,
+    item = EventItem(source_url=source_url, source_id=source_id, listing_url=listing_url or None,
                      extraction_method=data.get('extraction_method', 'unknown'))
     for name in EVENT_FIELDS:
         item[name] = data.get(name)
