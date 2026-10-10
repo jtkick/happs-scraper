@@ -19,9 +19,14 @@ Per source:
      event's detail page when the listing lacks its date or description
      ("required"), or when the page probably says more ("soft": a cut-off
      description, no address, no end, a multi-day span with no schedule),
-     carrying the listing data along as meta[PARTIAL]. Soft follows leave
+     carrying the listing data along as meta[PARTIAL]. An event the parse
+     gave no link takes the one in its entry on the listing
+     (scraper/discovery/event_links.py). Soft follows leave
      GENERIC_DETAIL_RESERVE of the budget for required ones, and the recipe
-     learns whether they help (`detail_useful`). Paginate.
+     learns whether they help (`detail_useful`). The listing's repeated
+     detail links that no event claimed are followed too, as entries the
+     parse missed, when some event claimed one of them (or none were
+     parsed). Paginate.
      With PLAYWRIGHT_ENABLED every HTML page is rendered (scraper/rendering.py).
      A detail page nothing suggests has changed is skipped and its events
      reported as still listed (scraper/page_state.py): same listing entry,
@@ -48,7 +53,7 @@ from scrapy.exceptions import DontCloseSpider, IgnoreRequest
 from scrapy.spidermiddlewares.httperror import HttpError
 
 from scraper import extraction, follow, page_state, platforms, settings as defaults
-from scraper.discovery import links as link_classifier, sitemap
+from scraper.discovery import event_links, sitemap
 from scraper.discovery.events_page import (
     events_urls_from_sitemap, find_events_pages, page_links, same_site, site_of,
 )
@@ -358,22 +363,26 @@ class GenericEventSpider(scrapy.Spider):
             if learned:
                 self.tracker.learn(run, 'ai', **learned)
 
-        found = link_classifier.classify(response, detail_css=recipe.get('detail_link_css'),
-                                         pagination_css=recipe.get('pagination_css'))
+        found = result.links
         self.page_parsed(response, result, events, kind='listing')
 
         for output in self._emit_listing_events(events, response, meta, run):
             yield output
 
-        if not events:
-            for url in found.details:
-                refetch = self._refetch_reason(url, run, response.url)
-                if refetch is None:
-                    continue
-                if self._detail_budget(run) <= 0:
-                    run.complete = False
-                    break
-                yield self._detail_request(url, meta, run, response.url, refetch=refetch)
+        # Entries the parse missed (often ones whose date is only on their own page), when
+        # the parse found none or some event's own page is among these links.
+        claimed = {follow.page_key(follow.detail_url(e, response.url) or '') for e in events}
+        unclaimed = [url for url in found.details if follow.page_key(url) not in claimed]
+        if events and len(unclaimed) == len(found.details):
+            unclaimed = []
+        for url in unclaimed:
+            refetch = self._refetch_reason(url, run, response.url)
+            if refetch is None:
+                continue
+            if self._detail_budget(run) <= 0:
+                run.complete = False
+                break
+            yield self._detail_request(url, meta, run, response.url, refetch=refetch)
 
         if found.next_page:
             if run.scheduled_listings < self.config.max_listing_pages:
@@ -535,7 +544,7 @@ class GenericEventSpider(scrapy.Spider):
         now = now_iso()
         run.pages.update(
             url, 'detail', listing_url=response.meta.get(LISTING_URL) or '',
-            listing_data={k: v for k, v in partial.items() if not k.startswith('_')} if partial else None,
+            listing_data=_listing_data(partial) if partial else None,
             listing_hash=page_state.listing_hash(partial) if partial else '',
             content_hash=new_hash, fingerprints=[], extraction_version=extraction.EXTRACTION_VERSION,
             fetched_at=now, last_listed_at=now)
@@ -617,3 +626,8 @@ class GenericEventSpider(scrapy.Spider):
         self._flush()
         if self.client:
             self.client.close()
+
+
+def _listing_data(partial: dict) -> dict:
+    """A detail page's listing entry as kept for its next fetch: its fields, and whether its link was guessed."""
+    return {k: v for k, v in partial.items() if not k.startswith('_') or k == event_links.GUESSED}

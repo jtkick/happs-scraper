@@ -8,6 +8,7 @@ may_follow(reason, …) → within the run's detail budget? Soft follows leave a
                         whose detail pages haven't helped
 judge_useful(…)       → after enough soft follows, did they help? (the recipe learns `detail_useful`)
 detail_url(data, url) → the event's own page on this site, or None
+page_key(url)         → a URL as compared with others (no fragment or trailing slash)
 """
 from __future__ import annotations
 from typing import Optional
@@ -58,6 +59,10 @@ def detail_url(data: dict, page_url: str) -> Optional[str]:
     if url.rstrip('/') == page_url.rstrip('/') or not same_site(url, page_url):
         return None
     return url
+
+
+def page_key(url: str) -> str:
+    return url.split('#')[0].rstrip('/')
 
 
 def looks_cut_off(description: str) -> bool:

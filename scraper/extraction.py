@@ -22,6 +22,10 @@ parse_feed(adapter, response, ...) → [event] | None
     once, as generators that pause (yield) when they need the model and are
     sent its answer; the sync and async entry points only differ in how they
     get that answer, so the crawl never blocks on Claude.
+    A listing's events that came without a link get the one in their entry
+    (scraper/discovery/event_links.py), and its links are classified
+    (PageResult.links). A detail page found by such a guessed link only
+    counts for the event it shows.
 
 finalize(data, ...)  → dict | None
     Fill gaps from the listing partial and the ambient context, then run the
@@ -38,6 +42,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from scraper import text as text_module
+from scraper.discovery import event_links, links as link_classifier
 from scraper.util import parse_iso
 from scraper.extractors import (
     recipe as recipe_extractor,
@@ -69,6 +74,8 @@ class PageResult:
     strategy: str = ''
     ai_used: bool = False
     ai_truncated: bool = False
+    # A listing's detail links and next page (scraper/discovery/links.py)
+    links: Optional[link_classifier.ListingLinks] = None
 
 
 def parse_page(response, *, kind: str, recipe: Optional[dict] = None, context: Optional[dict] = None,
@@ -103,8 +110,27 @@ def _parse_steps(response, kind, recipe, context, partial, use_ai):
         use_ai = False
     listing = kind == 'listing'
     result = yield from _extract_steps(response.text, response.url, recipe_events, use_ai, listing)
-    return result, finalize_page(result, response.text, context=context, partial=partial,
-                                 page_is_event=not (listing and result.single))
+    events = finalize_page(result, response.text, context=context, partial=partial,
+                           page_is_event=not (listing and result.single))
+    if listing:
+        result.links = link_classifier.classify(response, detail_css=recipe.get('detail_link_css'),
+                                                pagination_css=recipe.get('pagination_css'))
+        event_links.attach(response.text, response.url, events, result.links.details)
+    elif partial and partial.get(event_links.GUESSED):
+        events = _same_event(events, partial, context)
+    return result, events
+
+
+def _same_event(events: list[dict], partial: dict, context: Optional[dict]) -> list[dict]:
+    """
+    A detail page found by a guessed link (scraper/discovery/event_links.py) only
+    counts where it shows the listing's event; otherwise the listing entry stands alone.
+    """
+    kept = [e for e in events if event_links.same_event(partial, e)]
+    if kept or not events:
+        return kept
+    final = finalize(partial, context=context)
+    return [final] if final else []
 
 
 def _run(steps, ask):

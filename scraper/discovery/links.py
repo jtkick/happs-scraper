@@ -69,7 +69,7 @@ def _detail_links(response) -> list[str]:
         urls = _unique(urls)
         if len(urls) < MIN_GROUP:
             continue
-        eventish = sum(1 for u in urls if _looks_like_event(u, listing_path)) / len(urls)
+        eventish = sum(1 for u in urls if looks_like_event(u, listing_path)) / len(urls)
         if eventish < MIN_EVENTISH:
             continue
         score = eventish * len(urls)
@@ -78,7 +78,7 @@ def _detail_links(response) -> list[str]:
     return best
 
 
-def _looks_like_event(url: str, listing_path: str) -> bool:
+def looks_like_event(url: str, listing_path: str) -> bool:
     parsed = urlparse(url)
     path = parsed.path.rstrip('/')
     if _EVENT_PATH.search(path + ('?' + parsed.query if parsed.query else '')):

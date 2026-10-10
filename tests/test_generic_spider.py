@@ -318,6 +318,38 @@ def test_listing_without_events_follows_detail_links(spider):
     assert all(r.callback == spider.parse_event for r in requests)
 
 
+def test_detail_links_no_event_claimed_are_followed(spider):
+    request = listing_request(spider)
+    cards = ''.join(f'<div class="c"><a href="/events/{s}">{s}</a></div>' for s in ('a', 'b', 'c'))
+    body = html(ld(('Show A', '2026-06-05T19:00', {**COMPLETE, 'url': '/events/a/'})) + cards)
+    items, requests = split(spider.parse_listing(respond(request, body)))
+    assert [i['title'] for i in items] == ['Show A']
+    assert [r.url for r in requests] == ['https://venue.test/events/b', 'https://venue.test/events/c']
+    assert all(r.meta.get('partial') is None for r in requests)
+
+
+def test_detail_links_unrelated_to_the_events_are_not_followed(spider):
+    request = listing_request(spider)
+    cards = ''.join(f'<div class="c"><a href="/events/{s}">{s}</a></div>' for s in ('weddings', 'private', 'hire'))
+    body = html(ld(('Show A', '2026-06-05T19:00', COMPLETE)) + cards)
+    items, requests = split(spider.parse_listing(respond(request, body)))
+    assert [i['title'] for i in items] == ['Show A'] and requests == []
+
+
+def test_a_model_read_entry_follows_its_more_info_link():
+    from scraper.extractors.ai import AIResult
+    spider = make_spider(ANTHROPIC_API_KEY='key')
+    request = listing_request(spider)
+    entries = ''.join(f'<div class="i"><h3>{t}</h3><p>Teaser</p><a href="/more?id={n}">More info</a></div>'
+                      for n, t in enumerate(['Jazz Night', 'Quiz Night']))
+    found = AIResult(events=[{'title': t, 'start_datetime': f'2026-06-0{n + 5}T19:00', 'evidence': 'x'}
+                             for n, t in enumerate(['Jazz Night', 'Quiz Night'])])
+    spider._ai_extractor = lambda response: (lambda html_, url: found)
+    _, requests = split(spider.parse_listing(respond(request, html(entries))))
+    assert [r.url for r in requests] == ['https://venue.test/more?id=0', 'https://venue.test/more?id=1']
+    assert requests[0].meta['partial']['_link_guessed'] and requests[0].meta['detail_reason'] == 'required'
+
+
 def test_detail_budget_marks_run_incomplete():
     spider = make_spider(GENERIC_MAX_DETAIL_PAGES=2)
     request = listing_request(spider)
