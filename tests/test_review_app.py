@@ -192,6 +192,18 @@ def test_sync_turns_a_rejection_into_a_not_event(dirs, monkeypatch):
     assert case.events == [] and case.not_events == ['Pub Quiz']
 
 
+def test_sync_turns_a_list_of_events_into_a_case_to_label(dirs, monkeypatch):
+    correction = {'id': 'corr-777777', 'kind': 'listing', 'user': 'jared', 'source_url': SNAPSHOT['url'],
+                  'snapshot': SNAPSHOT, 'context': {}, 'before': {'title': 'Pub Quiz'},
+                  'after': {'listing': True}, 'notes': 'About 12 shows'}
+    [case_id] = _pull(monkeypatch, FakeBackend(corrections=[correction]))
+    case = Case.load(dirs[0] / case_id)
+    assert case.kind == 'listing' and case.complete is False
+    assert case.not_events == []                  # a real event's title, as on Wix pages
+    assert [e['title'] for e in case.events] == ['Jazz Night', 'Pub Quiz']
+    assert 'lists several events' in case.notes and 'About 12 shows' in case.notes
+
+
 def _event(**fields):
     """A corrected event as the backend sends it: every field, empty ones null."""
     event = dict.fromkeys(('description', 'end_datetime', 'location_title', 'location_address',

@@ -6,7 +6,9 @@ Pull review cases from the backend into review/inbox/:
   corrections        scraped events a curator (the backend's /staff/ console)
                      or an admin fixed, confirmed or rejected; the event as
                      they left it becomes the label, on the page as it was
-                     when they did (pinned by the backend, captured on request)
+                     when they did (pinned by the backend, captured on request).
+                     A page a curator said lists several events becomes a case
+                     whose events still need labelling
   missed reports     event pages someone said the crawl missed
 
 Snapshots and corrections are marked claimed in the backend so they're
@@ -125,6 +127,12 @@ def correction_case(correction: dict, client: BackendClient, api_key: str):
         case.events = []
         case.not_events = [before.get('title', '')]
         notes = f"{who} rejected “{before.get('title')}”."
+    elif after.get('listing'):
+        # The one event often has a real event's title (the first on the page),
+        # so it can't go in not_events without a look.
+        notes = (f"{who} said this page lists several events, which the scraper took for one, "
+                 f"“{before.get('title')}”. Label every event on it (these are only what the scraper "
+                 f"finds now), and add that title to not_events if it isn't one of them.")
     else:
         case.events = [correction_label(match, correction)]
         changed = correction.get('changed')

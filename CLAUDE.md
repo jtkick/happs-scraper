@@ -64,7 +64,7 @@
 - Scheduled: `.github/workflows/scrape.yml` (hourly: missed-event reports → crawl due sources → health summary); drop its crawl step once the pool runs on the server (both can run at once: sources are leased)
 - Run tests: `pytest`
 - Run tests including AI extractor calls: `pytest --run-ai`
-- Review parses and add test cases: `python tools/review.py` → http://127.0.0.1:8765 (capture a URL, correct the events, "Save as fixture"; "Re-run" parses with the code on disk). `python tools/review.py sync` pulls crawl snapshots, curators' and admins' corrections and missed reports into the inbox (needs `HAPPS_API_BASE` + `HAPPS_SCRAPER_TOKEN`)
+- Review parses and add test cases: `python tools/review.py` → http://127.0.0.1:8765 (capture a URL, correct the events, "Save as fixture"; "Re-run" parses with the code on disk). `python tools/review.py sync` pulls crawl snapshots, curators' and admins' corrections and missed reports into the inbox (needs `HAPPS_API_BASE` + `HAPPS_SCRAPER_TOKEN`). A curator's "It's a list of events" (`kind: listing`) becomes an incomplete case seeded with today's parse: label every event on the page, and put the one event's title in `not_events` only if it isn't a real event (it's often the first one's)
 - Capture from the command line: `python tools/capture.py <url> [--kind detail] [--venue NAME] [--timezone ZONE] [--from-file PATH --captured-at ISO] [--no-render] [--no-ai] [--edit]` (rendered by default, as the crawl renders)
 - Score the scraper on the fixtures: `python tools/evaluate.py [--ai live --model ID] [--json OUT] [--baseline FILE]`
 - Export training data: `python tools/export_dataset.py --out-dir dataset` (train/eval split by site, plus `corrections.jsonl`)
