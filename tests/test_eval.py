@@ -2,6 +2,8 @@
 from __future__ import annotations
 import json
 
+import pytest
+
 from scraper.eval.case import Case
 from scraper.eval.compare import compare, field_equal
 from scraper.eval.run import run_case
@@ -198,3 +200,23 @@ def test_split_is_stable_per_site():
     a, b = _case(url='https://www.venue.test/a'), _case(url='https://venue.test/b')
     assert split_of(a, 0.5) == split_of(b, 0.5)
     assert {split_of(a, 0.0), split_of(a, 1.0)} == {'train', 'eval'}
+
+
+# ── capture ───────────────────────────────────────────────────────────────────
+
+def test_capture_obeys_robots_unless_told_not_to(monkeypatch):
+    from scraper.eval import capture
+
+    class Robots:
+        def __init__(self, url): pass
+        def read(self): pass
+        def can_fetch(self, agent, url): return False
+
+    class Page:
+        ok, text = True, '<html>page</html>'
+
+    monkeypatch.setattr(capture.robotparser, 'RobotFileParser', Robots)
+    monkeypatch.setattr(capture.requests, 'get', lambda *a, **k: Page())
+    with pytest.raises(capture.FetchError, match='robots.txt'):
+        capture.fetch('https://venue.test/?format=json', render=False, obey_robots=True)
+    assert capture.fetch('https://venue.test/?format=json', render=False, obey_robots=False) == Page.text

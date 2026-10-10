@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from scraper import settings as defaults
 from scraper.eval.case import (
     FIXTURES_DIR, INBOX_DIR, LABEL_FIELDS, Case, now_iso, unique_id,
 )
@@ -28,11 +29,26 @@ class FetchError(Exception):
     pass
 
 
-def fetch(url: str, *, render: bool = True, user_agent: str = USER_AGENT) -> str:
+def fetch(url: str, *, render: bool = True, user_agent: str = USER_AGENT,
+          obey_robots: bool = defaults.ROBOTSTXT_OBEY) -> str:
     """
-    The page's HTML, honouring robots.txt like the crawler. Rendered with
-    Playwright by default, as the crawl renders every page; render=False fetches it raw.
+    The page's HTML, honouring robots.txt like the crawler (ROBOTSTXT_OBEY). Rendered
+    with Playwright by default, as the crawl renders every page; render=False fetches it raw.
     """
+    if obey_robots:
+        _check_robots(url, user_agent)
+    if render:
+        return _render(url, user_agent)
+    try:
+        resp = requests.get(url, headers={'User-Agent': user_agent}, timeout=20)
+    except requests.RequestException as exc:
+        raise FetchError(str(exc)) from exc
+    if not resp.ok:
+        raise FetchError(f'HTTP {resp.status_code}')
+    return resp.text
+
+
+def _check_robots(url: str, user_agent: str):
     origin = '{0.scheme}://{0.netloc}/'.format(urlparse(url))
     robots = robotparser.RobotFileParser(origin + 'robots.txt')
     try:
@@ -43,15 +59,6 @@ def fetch(url: str, *, render: bool = True, user_agent: str = USER_AGENT) -> str
         raise
     except Exception:
         pass
-    if render:
-        return _render(url, user_agent)
-    try:
-        resp = requests.get(url, headers={'User-Agent': user_agent}, timeout=20)
-    except requests.RequestException as exc:
-        raise FetchError(str(exc)) from exc
-    if not resp.ok:
-        raise FetchError(f'HTTP {resp.status_code}')
-    return resp.text
 
 
 def _render(url: str, user_agent: str) -> str:

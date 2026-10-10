@@ -6,7 +6,7 @@
 - Surgical edits only; do not rewrite whole files.
 - Tag names must exactly match the backend `REQUIRED_TAGS` fixture in `happs-backend/backend/events/management/commands/seed.py`.
 - Never create a raw `Dio`/`http` client; all HTTP in spiders goes through `AuthProvider.client` (Flutter side) or Scrapy's request machinery (scraper side).
-- `ROBOTSTXT_OBEY = True`. Do not disable politeness settings.
+- robots.txt is obeyed by default; `ROBOTSTXT_OBEY=false` in `.env` turns it off for the crawl and for captures (`scraper/eval/capture.py`). Only the owner sets it; never flip it yourself. Do not disable the other politeness settings (AutoThrottle, `CONCURRENT_REQUESTS_PER_DOMAIN`).
 
 ## Authority & Links
 - **Generic spider** (default for all venues): `scraper/spiders/generic.py` — sources come from the backend (`api/scraper/sources/due/`); discovery → listing → detail; learned recipe + run report sent at spider close, or each time a `keep_claiming` batch finishes (idle), after which the run is forgotten
@@ -72,4 +72,4 @@
 ## Stop Conditions
 - Destructive ops (drop DB, force push, prod deploy) → stop and ask.
 - Adding a tag name not in `REQUIRED_TAGS` → ask before proceeding.
-- Disabling `ROBOTSTXT_OBEY` or AutoThrottle → refuse.
+- Changing `ROBOTSTXT_OBEY`'s default or `.env` value → ask. Disabling AutoThrottle → refuse.

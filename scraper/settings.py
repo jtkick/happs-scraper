@@ -11,7 +11,9 @@ NEWSPIDER_MODULE = 'scraper.spiders'
 
 # ── Politeness ────────────────────────────────────────────────────────────────
 
-ROBOTSTXT_OBEY = True
+# Set ROBOTSTXT_OBEY=false to crawl pages a site's robots.txt disallows (also
+# for pages curators ask for, scraper/eval/capture.py). AutoThrottle stays on.
+ROBOTSTXT_OBEY = os.getenv('ROBOTSTXT_OBEY', 'true').lower() in ('1', 'true', 'yes')
 
 # Base delay between requests (seconds). AUTOTHROTTLE adjusts this dynamically.
 DOWNLOAD_DELAY = 1.5
