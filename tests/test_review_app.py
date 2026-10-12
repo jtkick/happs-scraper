@@ -346,3 +346,16 @@ def test_a_page_review_with_events_left_unchecked_is_not_complete(dirs, monkeypa
     case = Case.load(dirs[0] / case_id)
     assert not case.complete and len(case.events) == 1
 
+
+
+def test_a_page_reviews_details_pages_are_labels_only_where_the_page_links_them(dirs, monkeypatch):
+    first, _ = TWO_JAZZ_NIGHTS['events']
+    entries = [_entry('edit', first, url='https://tickets.test/jazz')]
+    missing = {**_event(title='Open Mic', start_datetime='2027-04-09T23:00:00+00:00'),
+               'url': 'https://venue.test/e/open-mic'}
+    [case_id] = _pull(monkeypatch, FakeBackend(page_reviews=[_page_review(entries, missing=[missing])]))
+    case = Case.load(dirs[0] / case_id)
+    assert not any('url' in e for e in case.events)
+
+    links = sync_module._page_links('<a href="/e/open-mic/#top">Open Mic</a>', 'https://venue.test/events/')
+    assert links == {'https://venue.test/e/open-mic', 'https://venue.test/events'}

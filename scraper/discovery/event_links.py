@@ -14,9 +14,17 @@ attach(html, page_url, events, detail_links=()) → None
 
 same_event(listing, detail) → bool
     Does a detail page's event share most of the listing entry's title words?
+
+apply_curated(events, links) → [url]
+    Pages curators gave for events' details (the backend's DetailLink, sent
+    with the source): each goes to the event it names (its title, exactly or
+    by most of its words; the nearest start among repeats) and replaces any
+    link found for it, marked follow.CURATED. Returns the pages that name no
+    event, which are followed as events the parse missed.
 """
 from __future__ import annotations
 import re
+from datetime import datetime, timedelta, timezone
 from itertools import chain
 from typing import Iterable, Optional
 from urllib.parse import urljoin, urlparse
@@ -25,8 +33,8 @@ from lxml import etree, html as lxml_html
 
 from scraper.discovery.events_page import same_site
 from scraper.discovery.links import looks_like_event
-from scraper.follow import page_key
-from scraper.util import fold
+from scraper.follow import CURATED, page_key
+from scraper.util import fold, parse_iso
 
 GUESSED = '_link_guessed'
 
@@ -97,6 +105,45 @@ def same_event(listing: dict, detail: dict) -> bool:
         return True
     shared = words & set(_WORD.findall(_norm(detail.get('title'))))
     return len(shared) >= SAME_EVENT_SHARE * len(words)
+
+
+def apply_curated(events: list[dict], links: list[dict]) -> list[str]:
+    unmatched = []
+    for link in links:
+        event = _named(events, link.get('title'), link.get('start'))
+        if event is None:
+            unmatched.append(link['url'])
+            continue
+        event['url'] = link['url']
+        event[CURATED] = True
+        event.pop(GUESSED, None)
+    return unmatched
+
+
+def _named(events: list[dict], title, start) -> Optional[dict]:
+    want = _norm(title)
+    if not want:
+        return None
+    free = [e for e in events if not e.get(CURATED)]
+    named = [e for e in free if _norm(e.get('title')) == want]
+    if not named and _WORD.search(want):
+        named = [e for e in free if same_event({'title': title}, e)]
+    when = _instant(start)
+    if when is None or len(named) < 2:
+        return named[0] if named else None
+
+    def distance(event):
+        at = _instant(event.get('start_datetime'))
+        return abs(at - when) if at else timedelta.max
+    return min(named, key=distance)
+
+
+def _instant(value) -> Optional[datetime]:
+    """A start as an aware time; a naive one is taken as UTC, near enough to tell days apart."""
+    parsed = parse_iso(value) if value else None
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class _Page:

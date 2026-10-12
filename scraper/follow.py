@@ -1,13 +1,14 @@
 """
 Which of a listing's events are worth following to their own page.
 
-detail_reason(data)   → 'required' (the listing lacks a start or description),
+detail_reason(data)   → 'required' (the listing lacks a start or description, or a
+                        curator gave the page),
                         'soft' (the page probably says more), or None
 may_follow(reason, …) → within the run's detail budget? Soft follows leave a
                         reserve for required ones, and only sample a site
                         whose detail pages haven't helped
 judge_useful(…)       → after enough soft follows, did they help? (the recipe learns `detail_useful`)
-detail_url(data, url) → the event's own page on this site, or None
+detail_url(data, url) → the event's own page on this site (any site, for a curator's), or None
 page_key(url)         → a URL as compared with others (no fragment or trailing slash)
 """
 from __future__ import annotations
@@ -17,6 +18,9 @@ from urllib.parse import urljoin
 from scraper.discovery.events_page import same_site
 from scraper.util import parse_iso
 
+# Set on a listing event whose details page a curator gave (scraper/discovery/event_links.py).
+CURATED = '_link_curated'
+
 # A listing description shorter than this that doesn't end a sentence is probably a teaser.
 TEASER_CHARS = 300
 # After this many soft follows in a run, judge whether they help: at least this share must add something.
@@ -25,7 +29,7 @@ DETAIL_USEFUL_SHARE = 0.3
 
 
 def detail_reason(data: dict) -> Optional[str]:
-    if not (data.get('start_datetime') and data.get('description')):
+    if data.get(CURATED) or not (data.get('start_datetime') and data.get('description')):
         return 'required'
     if (looks_cut_off(data['description'])
             or not (data.get('location_address') or data.get('location_lat') is not None)
@@ -56,7 +60,7 @@ def detail_url(data: dict, page_url: str) -> Optional[str]:
     if not data.get('url'):
         return None
     url = urljoin(page_url, data['url'])
-    if url.rstrip('/') == page_url.rstrip('/') or not same_site(url, page_url):
+    if url.rstrip('/') == page_url.rstrip('/') or not (same_site(url, page_url) or data.get(CURATED)):
         return None
     return url
 

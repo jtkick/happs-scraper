@@ -1,7 +1,7 @@
 """Tests for scraper/discovery/event_links.py — a listing event's own page, from its entry."""
 from scrapy.http import HtmlResponse
 
-from scraper import extraction
+from scraper import extraction, follow
 from scraper.discovery import event_links
 from scraper.extractors.ai import AIResult
 
@@ -126,3 +126,39 @@ def test_a_guessed_link_to_some_other_page_leaves_the_listing_entry_alone():
     right = other.replace('About Us', 'Jazz Night | Rosie’s').replace('We are a bar.', 'The long story.')
     _, [event] = extraction.parse_page(response(right, partial['url']), kind='detail', partial=partial)
     assert event['description'] == 'The long story.'
+
+
+# ── Pages curators gave ───────────────────────────────────────────────────────
+
+def test_a_curators_page_goes_to_the_event_it_names():
+    events = [{'title': 'Jazz Night', 'url': 'https://venue.test/guess', event_links.GUESSED: True},
+              {'title': 'Quiz Night'}]
+    missed = event_links.apply_curated(events, [
+        {'title': 'JAZZ NIGHT', 'url': 'https://tickets.test/jazz'},
+        {'title': 'The Quiz Night!', 'url': 'https://venue.test/quiz'},
+        {'title': 'Open Mic', 'url': 'https://venue.test/mic'}])
+    assert [e['url'] for e in events] == ['https://tickets.test/jazz', 'https://venue.test/quiz']
+    assert all(e[follow.CURATED] and event_links.GUESSED not in e for e in events)
+    assert missed == ['https://venue.test/mic']
+
+
+def test_a_curators_page_goes_to_the_repeat_nearest_its_start():
+    events = [{'title': 'Trivia', 'start_datetime': f'2026-11-0{d}T20:00'} for d in (1, 8, 15)]
+    event_links.apply_curated(events, [{'title': 'Trivia', 'url': 'https://venue.test/t8',
+                                        'start': '2026-11-09T01:00:00+00:00'}])
+    assert [e.get('url') for e in events] == [None, 'https://venue.test/t8', None]
+
+
+def test_a_short_title_only_matches_exactly():
+    events = [{'title': 'Jazz Night'}]
+    assert event_links.apply_curated(events, [{'title': 'DJ', 'url': 'https://venue.test/dj'}]) \
+        == ['https://venue.test/dj']
+
+
+def test_a_curators_page_may_be_on_another_site():
+    data = {'title': 'Jazz', 'start_datetime': '2026-11-01', 'description': 'All of it.',
+            'url': 'https://tickets.test/jazz'}
+    assert follow.detail_url(data, LISTING) is None
+    data[follow.CURATED] = True
+    assert follow.detail_url(data, LISTING) == 'https://tickets.test/jazz'
+    assert follow.detail_reason(data) == 'required'

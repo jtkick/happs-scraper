@@ -73,6 +73,12 @@ class SourceRun:
     def recipe(self) -> dict:
         return self.source.get('effective_recipe') or {}
 
+    def detail_links(self, listing_url: str) -> list[dict]:
+        """Pages curators gave for the details of events on this listing: [{url, title, start}]."""
+        key = follow.page_key(listing_url)
+        return [link for link in self.source.get('detail_links') or []
+                if link.get('url') and follow.page_key(link.get('listing_url') or '') == key]
+
     def report(self) -> dict:
         strategy = self.strategies.most_common(1)[0][0] if self.strategies else ''
         return {

@@ -26,7 +26,9 @@ Per source:
      learns whether they help (`detail_useful`). The listing's repeated
      detail links that no event claimed are followed too, as entries the
      parse missed, when some event claimed one of them (or none were
-     parsed). Paginate.
+     parsed). Details pages curators gave (the source's `detail_links`) go
+     to the events they name, are always followed, and may be on any
+     site; one naming no event is followed as a missed one. Paginate.
      With PLAYWRIGHT_ENABLED every HTML page is rendered (scraper/rendering.py).
      A detail page nothing suggests has changed is skipped and its events
      reported as still listed (scraper/page_state.py): same listing entry,
@@ -365,17 +367,24 @@ class GenericEventSpider(scrapy.Spider):
 
         found = result.links
         self.page_parsed(response, result, events, kind='listing')
+        curated = run.detail_links(response.url)
+        missed = []
+        if curated:
+            # Copies, so the page's snapshot keeps what the parse alone found.
+            events = [dict(e) for e in events]
+            missed = event_links.apply_curated(events, curated)
 
         for output in self._emit_listing_events(events, response, meta, run):
             yield output
 
-        # Entries the parse missed (often ones whose date is only on their own page), when
-        # the parse found none or some event's own page is among these links.
+        # Entries the parse missed (often ones whose date is only on their own page): pages
+        # curators gave, and the repeated detail links no event claimed, when the parse
+        # found none or some event's own page is among them.
         claimed = {follow.page_key(follow.detail_url(e, response.url) or '') for e in events}
         unclaimed = [url for url in found.details if follow.page_key(url) not in claimed]
         if events and len(unclaimed) == len(found.details):
             unclaimed = []
-        for url in unclaimed:
+        for url in dict.fromkeys([*(u for u in missed if follow.page_key(u) not in claimed), *unclaimed]):
             refetch = self._refetch_reason(url, run, response.url)
             if refetch is None:
                 continue

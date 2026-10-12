@@ -328,6 +328,21 @@ def test_detail_links_no_event_claimed_are_followed(spider):
     assert all(r.meta.get('partial') is None for r in requests)
 
 
+def test_details_pages_curators_gave_are_followed(spider):
+    links = [{'listing_url': 'https://venue.test/events/', 'title': 'Jazz', 'start': '2026-06-05T23:00:00+00:00',
+              'url': 'https://tickets.test/jazz'},
+             {'listing_url': 'https://venue.test/events', 'title': 'Blues', 'start': None,
+              'url': 'https://venue.test/blues'},
+             {'listing_url': 'https://venue.test/other', 'title': 'Folk', 'url': 'https://venue.test/folk'}]
+    request = listing_request(spider, detail_links=links)
+    body = html(ld(('Jazz', '2026-06-05T19:00', COMPLETE), ('Trivia', '2026-06-06T20:00', COMPLETE)))
+    items, requests = split(spider.parse_listing(respond(request, body)))
+    assert [i['title'] for i in items] == ['Trivia']
+    assert [r.url for r in requests] == ['https://tickets.test/jazz', 'https://venue.test/blues']
+    assert requests[0].meta['partial']['title'] == 'Jazz' and requests[0].meta['detail_reason'] == 'required'
+    assert requests[1].meta.get('partial') is None
+
+
 def test_detail_links_unrelated_to_the_events_are_not_followed(spider):
     request = listing_request(spider)
     cards = ''.join(f'<div class="c"><a href="/events/{s}">{s}</a></div>' for s in ('weddings', 'private', 'hire'))

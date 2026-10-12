@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+from lxml import etree, html as lxml_html
 
 from scraper.discovery.events_page import site_of
 from scraper.eval.capture import FetchError, fetch, labels_from, new_case
@@ -167,6 +169,8 @@ def page_review_case(page_review: dict, client: BackendClient, api_key: str):
     A reviewed page, labelled with every event a curator kept and every one
     they added as missing. Events read from their own pages are labelled by
     title only: the listing names them, their details are on pages of their own.
+    A `url` the page doesn't link to (a details page a curator found elsewhere)
+    is left out of the labels.
     """
     url = page_review['url']
     case = _pinned_case(page_review, url, 'page', 'page_review', client, api_key)
@@ -182,6 +186,11 @@ def page_review_case(page_review: dict, client: BackendClient, api_key: str):
         else:
             labels.append({'title': entry['after'].get('title') or entry.get('title', '')})
     added = [labels_from(label) for label in page_review.get('missing') or []]
+    links = _page_links(case.html, url)
+    for label in labels + added:
+        # A details page a curator found elsewhere: no parse of this page could know it.
+        if label.get('url') and label['url'].split('#')[0].rstrip('/') not in links:
+            label.pop('url')
     rejected = [e for e in entries if e['verdict'] == 'reject']
     unchecked = [e for e in entries if e['verdict'] == 'unchecked']
 
@@ -201,6 +210,15 @@ def page_review_case(page_review: dict, client: BackendClient, api_key: str):
                      'that title is often the first real event’s, so it isn’t in not_events.')
     case.notes = '\n'.join([*notes, page_review.get('notes') or '']).strip()
     return case
+
+
+def _page_links(html: str, url: str) -> set[str]:
+    """Every address the page links to, without fragments or trailing slashes, and the page's own."""
+    try:
+        hrefs = lxml_html.fromstring(html).xpath('//a/@href') if html else []
+    except (etree.ParserError, ValueError):
+        hrefs = []
+    return {urljoin(url, h.strip()).split('#')[0].rstrip('/') for h in [*hrefs, url]}
 
 
 def correction_label(match: dict | None, correction: dict) -> dict:
