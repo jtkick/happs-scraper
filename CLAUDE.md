@@ -52,7 +52,8 @@
 ## Worktrees
 - Sessions often run in `.claude/worktrees/<name>/` on a `worktree-<name>` branch cut from `origin/main`
 - No venv there; use the main checkout's `/home/jared/Development/happs-scraper/.venv/bin/python` (`-m pytest`, `-m scrapy`)
-- Made with VS Code's "Claude Code: Create Worktree" command, which doesn't copy `.worktreeinclude` files; if `.env` is missing, copy it from the main checkout (the first path in `git worktree list`)
+- Made when the user asks Claude to start a worktree (the `EnterWorktree` tool; the extension has no command for it), which copies `.env` from `.worktreeinclude`; if a worktree made another way lacks it, copy it from the main checkout (the first path in `git worktree list`)
+- Claude can't turn on Remote Control itself, so after creating a worktree, remind the user to switch it on for that session (the Remote Control toggle in the VS Code panel, or `/remote-control`).
 - Stay inside this worktree, plus the other repos' worktrees of the same name when the window has several folders; never edit the main checkout or another worktree
 - Land on `main`: commit, then `git fetch origin && git rebase origin/main && git push origin HEAD:main`
 
