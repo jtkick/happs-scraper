@@ -41,7 +41,7 @@ MIN_TEXT_CHARS = 200
 OUTPUT_KEYS = [
     'title', 'description', 'start_datetime', 'end_datetime',
     'location_title', 'location_address',
-    'ticket_price', 'ticket_url', 'url', 'image_url', 'evidence',
+    'ticket_price', 'ticket_url', 'rsvp_url', 'url', 'image_url', 'evidence',
 ]
 
 _NULLABLE_STR = {'anyOf': [{'type': 'string'}, {'type': 'null'}]}
@@ -63,6 +63,7 @@ EVENTS_SCHEMA = {
                     'location_address': _NULLABLE_STR,
                     'ticket_price':     _NULLABLE_NUM,
                     'ticket_url':       _NULLABLE_STR,
+                    'rsvp_url':         _NULLABLE_STR,
                     'url':              _NULLABLE_STR,
                     'image_url':        _NULLABLE_STR,
                     'evidence':         {'type': 'string'},
@@ -101,6 +102,9 @@ today's date, unless a weekday is given: then choose the year in which that date
 - evidence: copy, verbatim, the shortest span of page text that states the event's date and time \
 (for a repeating event, its schedule, e.g. "EVERY THU 8–11pm"). Do not paraphrase it.
 - ticket_price: the lowest price in the page's currency; 0 for free; null if not stated.
+- ticket_url is only a link to buy tickets. rsvp_url is a link to RSVP, register or sign up \
+(an RSVP or sign-up form; an Eventbrite, Meetup, Partiful or Luma registration), often for a free \
+or pay-at-the-door event. Never put the same link in both.
 - Use null for anything the page does not state. Never invent URLs or details."""
 
 

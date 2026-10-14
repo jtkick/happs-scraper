@@ -154,6 +154,11 @@ def test_ticket_price_coercion(normalize, raw, expected):
     assert normalize.process_item(_item(ticket_price=raw), None)['ticket_price'] == expected
 
 
+def test_rsvp_link_is_cleaned_apart_from_the_ticket_link(normalize):
+    item = normalize.process_item(_item(ticket_url=None, rsvp_url='  https://t.test/rsvp \n'), None)
+    assert (item['rsvp_url'], item['ticket_url']) == ('https://t.test/rsvp', None)
+
+
 def test_non_list_tag_names_are_reset(normalize):
     assert normalize.process_item(_item(tag_names='Music'), None)['tag_names'] == []
 

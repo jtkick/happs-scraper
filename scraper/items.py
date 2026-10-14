@@ -20,6 +20,7 @@ class EventItem(scrapy.Item):
     location_lon    = scrapy.Field()
     ticket_price    = scrapy.Field()   # float (USD) or None
     ticket_url      = scrapy.Field()
+    rsvp_url        = scrapy.Field()   # where to RSVP or register, apart from buying tickets
     url             = scrapy.Field()   # event's own website
     image_url       = scrapy.Field()   # remote image to download server-side
     tag_names       = scrapy.Field()   # list[str] matched against Tag.name
@@ -61,7 +62,7 @@ LIST_FIELDS = ('tag_names', 'rdates', 'exdates')
 EVENT_FIELDS = (
     'title', 'description', 'start_datetime', 'end_datetime',
     'location_title', 'location_address', 'location_lat', 'location_lon',
-    'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
+    'ticket_price', 'ticket_url', 'rsvp_url', 'url', 'image_url', 'tag_names',
     *RECURRENCE_DEFAULTS,
     'rdates', 'exdates', 'timezone', 'evidence', 'drop_reason',
 )
@@ -71,7 +72,7 @@ EVENT_FIELDS = (
 PAYLOAD_FIELDS = (
     'title', 'description', 'start_datetime', 'end_datetime',
     'location_title', 'location_address', 'location_lat', 'location_lon',
-    'ticket_price', 'ticket_url', 'url', 'image_url', 'tag_names',
+    'ticket_price', 'ticket_url', 'rsvp_url', 'url', 'image_url', 'tag_names',
     'source_id', 'source_url', 'listing_url', 'extraction_method', 'confidence', 'review_required',
     *RECURRENCE_DEFAULTS, 'rdates', 'exdates',
 )

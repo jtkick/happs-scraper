@@ -214,7 +214,7 @@ def test_sync_turns_a_list_of_events_into_a_case_to_label(dirs, monkeypatch):
 def _event(**fields):
     """A corrected event as the backend sends it: every field, empty ones null."""
     event = dict.fromkeys(('description', 'end_datetime', 'location_title', 'location_address',
-                           'location_lat', 'location_lon', 'ticket_price', 'ticket_url',
+                           'location_lat', 'location_lon', 'ticket_price', 'ticket_url', 'rsvp_url',
                            'recurrence_until', 'recurrence_count'))
     event.update({'title': 'Jazz Night', 'start_datetime': '2027-04-08T23:00:00+00:00',
                   'url': SNAPSHOT['url'], 'recurrence_freq': 'none', 'recurrence_interval': 1,

@@ -43,11 +43,12 @@ def event(title, evidence, **extra):
 
 def test_returns_every_event_and_drops_nulls(stub):
     stub({'events': [event('The Blue Notes', 'Friday June 5 — The Blue Notes, doors 7pm'),
-                     event('Open Mic', 'Saturday June 6 — Open Mic from 8pm', ticket_price=0)]})
+                     event('Open Mic', 'Saturday June 6 — Open Mic from 8pm', ticket_price=0,
+                           rsvp_url='https://t.test/rsvp')]})
     result = ai.extract_many(HTML, 'https://t.test/', 'key')
     assert [e['title'] for e in result.events] == ['The Blue Notes', 'Open Mic']
     assert 'description' not in result.events[0]
-    assert result.events[1]['ticket_price'] == 0
+    assert (result.events[1]['ticket_price'], result.events[1]['rsvp_url']) == (0, 'https://t.test/rsvp')
     assert not any('drop_reason' in e for e in result.events)
 
 

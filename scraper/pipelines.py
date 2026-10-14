@@ -75,6 +75,7 @@ class NormalizePipeline:
         item['url']              = self._clean(item.get('url'))
         item['image_url']        = self._clean(item.get('image_url'))
         item['ticket_url']       = self._clean(item.get('ticket_url'))
+        item['rsvp_url']         = self._clean(item.get('rsvp_url'))
 
         item['title'] = cleaners.clean_title(raw_title, dict(item)) or raw_title
 

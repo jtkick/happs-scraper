@@ -23,7 +23,7 @@ _PRICE_TOLERANCE = 0.01
 
 _DATETIME_FIELDS = {'start_datetime', 'end_datetime'}
 _SET_FIELDS = {'tag_names', 'recurrence_byday'}
-_URL_FIELDS = {'url', 'ticket_url', 'image_url'}
+_URL_FIELDS = {'url', 'ticket_url', 'rsvp_url', 'image_url'}
 # Free text whose exact wording isn't the point (evidence is any span that states the date).
 _UNCHECKED = {'evidence'}
 
