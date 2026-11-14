@@ -291,3 +291,25 @@ def test_mcp_get_case_pages_labels(mcp_tools, monkeypatch):
     monkeypatch.setattr(fake, 'case', lambda case_id, **p: copy.deepcopy(fake.cases[case_id]), raising=False)
     out = call_tool(module, 'get_case', {'case_id': 'c1', 'labels_from': 1, 'labels_limit': 1})
     assert (out['labels_total'], [lb['index'] for lb in out['labels']]) == (2, [1])
+
+
+def test_mcp_generate_cases_writes_one_case_per_format_and_variant(mcp_tools, monkeypatch):
+    module, fake = mcp_tools
+    put = []
+    monkeypatch.setattr(fake, 'put', lambda path, data: put.append((path, data)) or {'id': f'id{len(put)}'},
+                        raising=False)
+    out = call_tool(module, 'generate_cases', {
+        'formats': ['jsonld', 'month_grid'], 'variants': ['long', 'yearless+24h'], 'slug': 'Tap Room',
+        'ai': 'none', 'events': [{'title': 'Quiz', 'start': '2026-10-01T20:00'},
+                                 {'title': 'Karaoke', 'start': '2026-10-01T21:00', 'weekly': ['TH']}]})
+    assert out['made'] == [] and len(out['skipped']) == 4          # weekly events can't go in either format
+    out = call_tool(module, 'generate_cases', {'formats': ['jsonld', 'html_list'], 'variants': ['long', 'noise'],
+                                               'slug': 'Tap Room', 'ai': 'none'})
+    assert [m['external_id'] for m in out['made']] == [
+        'synth-tap-room-jsonld-long', 'synth-tap-room-jsonld-noise',
+        'synth-tap-room-html_list-long', 'synth-tap-room-html_list-noise']
+    path, body = put[0]
+    assert path == 'cases/by-key/synth-tap-room-jsonld-long/'
+    assert body['page']['url'] == 'https://tap-room.test/jsonld/long/' and body['page']['origin'] == 'synthetic'
+    assert body['tags'] == ['synthetic', 'fmt:jsonld', 'variant:long']
+    assert out['made'][0]['capture_found'] == 3 and out['made'][2]['capture_found'] == 0

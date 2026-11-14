@@ -175,6 +175,54 @@ def create_case(url: str, labels: list[dict], html: Optional[str] = None, page_i
 
 
 @mcp.tool()
+def generate_cases(events: Optional[list[dict]] = None, formats: Optional[list[str]] = None,
+                   variants: Optional[list[str]] = None, slug: str = 'synthetic', venue: str = 'The Test Venue',
+                   timezone: str = 'America/New_York', captured_at: str = '2026-09-15T12:00:00+00:00',
+                   ai: str = 'live', tags: Optional[list[str]] = None) -> dict:
+    """Write test pages from a list of events, one case per format × variant, with labels true by construction.
+    events: [{title, start: 'YYYY-MM-DDTHH:MM' venue-local, end?, description?, price?, ticket_url?, url?,
+    weekly?: ['TH']}] (default: a small mixed set). formats: jsonld, microdata, html_list, html_table,
+    month_grid, prose, detail_page (default all). variants: '+'-joined flags — date style long|short|numeric|
+    yearless|iso, time style 12h|24h, extras noise|nolinks (default ['long']). Pages live under
+    https://<slug>.test/. ai='live' records the model's answer now so replays measure the AI extractor
+    (needs ANTHROPIC_API_KEY; plain HTML formats find nothing without it). Cases are tagged synthetic,
+    fmt:<format> and variant:<variant>; existing ones (same external_id) are replaced."""
+    from scraper.eval.capture import reparse
+    from scraper.eval.case import Case
+    from scraper.eval.synth import FORMATS, Unsupported, default_events, render
+    events = events or default_events(captured_at)
+    api_key = _api_key() if ai == 'live' else ''
+    mode = 'live' if api_key else None
+    made, skipped = [], []
+    for fmt in formats or FORMATS:
+        for variant in variants or ['long']:
+            base = f'https://{_slug(slug)}.test'
+            try:
+                html, labels, kind = render(events, fmt, venue=venue, timezone=timezone, variant=variant,
+                                            captured_at=captured_at, base_url=base)
+            except Unsupported as exc:
+                skipped.append({'format': fmt, 'variant': variant, 'why': str(exc)})
+                continue
+            except ValueError as exc:
+                raise ToolError(str(exc))
+            url = f'{base}/{fmt.replace("_", "-")}/{variant.replace("+", "-")}/'
+            context = {'location_title': venue, 'timezone': timezone}
+            case = Case(id='', url=url, html=html, kind=kind, captured_at=captured_at, seed_context=context)
+            reparse(case, ai=mode, api_key=api_key)
+            external_id = f'synth-{_slug(slug)}-{fmt}-{variant.replace("+", "-")}'
+            body = {'page': {'url': url, 'html': html, 'captured_at': captured_at, 'origin': 'synthetic'},
+                    'kind': kind, 'context': context, 'labels': labels, 'complete': True, 'parsed': case.parsed,
+                    'tags': ['synthetic', f'fmt:{fmt}', f'variant:{variant}', *(tags or [])],
+                    'notes': f'Generated: {fmt}, {variant}.'}
+            if case.ai_response:
+                body['ai_response'] = {**case.ai_response, 'origin': 'capture'}
+            data = call(store().put, f'cases/by-key/{external_id}/', body)
+            made.append({'id': data['id'], 'external_id': external_id, 'format': fmt, 'variant': variant,
+                         'labels': len(labels), 'capture_found': len(case.parsed['events'])})
+    return {'made': made, 'skipped': skipped, 'ai': mode or 'none'}
+
+
+@mcp.tool()
 def derive_case(case_id: str, external_id: Optional[str] = None, replace: Optional[list[dict]] = None,
                 remove_selectors: Optional[list[str]] = None, html: Optional[str] = None,
                 overrides: Optional[dict] = None) -> dict:
