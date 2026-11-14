@@ -1,5 +1,6 @@
 """
-Pull review cases from the backend into review/inbox/:
+Pull review cases from the backend into review/inbox/ (or, with pull(store=…),
+into the backend's eval store as draft cases tagged `sync` and their source):
 
   crawl snapshots    pages the crawler saved (AI used, low confidence, drops,
                      empty listings, a random sample), with what it parsed then
@@ -40,7 +41,9 @@ LEDGER = ROOT / 'review' / 'synced.json'
 CAPTURE_WAIT = timedelta(hours=12)
 
 
-def pull() -> list[str]:
+def pull(store=None) -> list[str]:
+    """New case ids. `store` (scraper.eval.store.Store) sends cases there instead of review/inbox/; one
+    already in the store (same external_id) is left as it is, so later edits there are kept."""
     base, token = os.getenv('HAPPS_API_BASE', ''), os.getenv('HAPPS_SCRAPER_TOKEN', '')
     if not base or not token:
         raise RuntimeError('Set HAPPS_API_BASE and HAPPS_SCRAPER_TOKEN (in .env) to sync from the backend.')
@@ -54,7 +57,7 @@ def pull() -> list[str]:
             if html is None:
                 continue
             case = snapshot_case(snapshot, html)
-            _save(case, added)
+            _save(case, added, store)
             client.update_snapshot(snapshot['id'], {'status': 'claimed'})
 
         for correction in client.corrections(status='pending'):
@@ -62,7 +65,7 @@ def pull() -> list[str]:
                 continue
             case = correction_case(correction, client, api_key)
             if case is not None:
-                _save(case, added)
+                _save(case, added, store)
             client.update_correction(correction['id'], {'status': 'claimed'})
 
         for page_review in client.page_reviews(status='pending'):
@@ -70,7 +73,7 @@ def pull() -> list[str]:
                 continue
             case = page_review_case(page_review, client, api_key)
             if case is not None:
-                _save(case, added)
+                _save(case, added, store)
             client.update_page_review(page_review['id'], {'status': 'claimed'})
 
         for report in client.reports():
@@ -82,7 +85,7 @@ def pull() -> list[str]:
             except FetchError:
                 continue
             source = client.source_by_domain(site_of(report['url']))
-            _save(report_case(report, report['url'], html, source, api_key), added)
+            _save(report_case(report, report['url'], html, source, api_key), added, store)
             seen.add(key)
     finally:
         _save_ledger(seen)
@@ -258,7 +261,17 @@ def _corrected_event(parsed: list[dict], correction: dict) -> dict | None:
     return match
 
 
-def _save(case: Case, added: list[str]) -> None:
+def _save(case: Case, added: list[str], store=None) -> None:
+    if store is not None:
+        from scraper.eval.store import StoreError, case_to_api
+        try:
+            store.post('cases/', {**case_to_api(case, tags=['sync', case.source]), 'external_id': case.id})
+        except StoreError as exc:
+            if exc.status == 409:
+                return
+            raise
+        added.append(case.id)
+        return
     if (INBOX_DIR / case.id).exists() or (FIXTURES_DIR / case.id).exists():
         return
     case.save(INBOX_DIR / case.id)

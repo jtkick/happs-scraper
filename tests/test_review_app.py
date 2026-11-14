@@ -359,3 +359,33 @@ def test_a_page_reviews_details_pages_are_labels_only_where_the_page_links_them(
 
     links = sync_module._page_links('<a href="/e/open-mic/#top">Open Mic</a>', 'https://venue.test/events/')
     assert links == {'https://venue.test/e/open-mic', 'https://venue.test/events'}
+
+
+class RecordingStore:
+    """Takes cases the way the eval store does: a repeated external_id is refused with 409."""
+
+    def __init__(self):
+        self.cases = {}
+
+    def post(self, path, data=None, *, idempotent=True):
+        from scraper.eval.store import StoreError
+        assert path == 'cases/'
+        if data['external_id'] in self.cases:
+            raise StoreError(409, [{'path': 'external_id', 'code': 'exists', 'message': 'taken'}])
+        self.cases[data['external_id']] = data
+        return data
+
+
+def test_sync_into_the_store_leaves_existing_cases_alone(dirs, monkeypatch):
+    store = RecordingStore()
+    monkeypatch.setenv('HAPPS_API_BASE', 'http://backend.test/api')
+    monkeypatch.setenv('HAPPS_SCRAPER_TOKEN', 't')
+    monkeypatch.setattr(sync_module, 'BackendClient', lambda base, token: FakeBackend(snapshots=[SNAPSHOT]))
+    [case_id] = sync_module.pull(store)
+    sent = store.cases[case_id]
+    assert sent['tags'] == ['sync', 'crawl'] and sent['source'] == 'crawl'
+    assert [lb['title'] for lb in sent['labels']] == ['Jazz Night', 'Pub Quiz']
+    assert sent['page']['url'] == SNAPSHOT['url'] and sent['page']['origin'] == 'synthetic'
+    assert not any(dirs[0].iterdir())                                    # nothing written to the inbox
+    monkeypatch.setattr(sync_module, 'BackendClient', lambda base, token: FakeBackend(snapshots=[SNAPSHOT]))
+    assert sync_module.pull(store) == []                                  # already in the store

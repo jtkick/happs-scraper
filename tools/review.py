@@ -6,6 +6,7 @@ it, and save the case as a fixture (tests/fixtures/) for tests and training.
 Usage:
     python tools/review.py [--port 8765] [--no-reload]
     python tools/review.py sync        # pull new cases from the backend, no UI
+    python tools/review.py sync --store   # … into the backend's eval store instead of review/inbox/
 
 The server restarts whenever scraper/ changes, so "Re-run" always parses with
 the code as it is on disk. Needs requirements-dev.txt.
@@ -25,18 +26,21 @@ def main():
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--no-reload', action='store_true')
+    parser.add_argument('--store', action='store_true', help='sync into the eval store (api/eval/)')
     args = parser.parse_args()
 
     from dotenv import load_dotenv
     load_dotenv(ROOT / '.env')
 
     if args.command == 'sync':
+        from scraper.eval.store import Store, StoreError
         from tools.review_app.sync import pull
         try:
-            added = pull()
-        except RuntimeError as exc:
+            added = pull(Store.from_env() if args.store else None)
+        except (RuntimeError, StoreError) as exc:
             sys.exit(str(exc))
-        print(f'{len(added)} new cases in review/inbox/' + ''.join(f'\n  {a}' for a in added))
+        where = 'the eval store' if args.store else 'review/inbox/'
+        print(f'{len(added)} new cases in {where}' + ''.join(f'\n  {a}' for a in added))
         return
 
     import uvicorn
