@@ -336,3 +336,71 @@ def default_events(captured_at: str = '2026-09-15T12:00:00+00:00') -> list[dict]
         {'title': 'Comedy Showcase', 'start': day(6, 19, 30), 'price': 15,
          'ticket_url': 'https://tickets.venue.test/comedy', 'description': 'Five local comics.'},
     ]
+
+
+# ── Whole sites (scraper/eval/sites.py crawls them) ──────────────────────────
+
+LAYOUTS = ('listing_details', 'listing_only', 'paginated', 'calendar_link')
+
+
+def render_site(events: list[dict], *, layout: str = 'listing_details', listing_format: str = 'jsonld',
+                slug: str = 'venue', venue: str = 'The Test Venue', timezone: str = 'America/New_York',
+                variant: str = 'long', captured_at: str = '2026-09-15T12:00:00+00:00', nav: bool = True,
+                sitemap: bool = False) -> dict:
+    """A small venue site: {pages: [{path, html, content_type}], labels, expect_fetched (paths)}.
+    listing_details  a homepage linking to /events, which links each event's own page
+    listing_only     the same without event pages (the listing is all there is)
+    paginated        /events holds half the events and a "Next page" link to /events?page=2
+    calendar_link    the homepage links "Calendar" (/calendar) instead of "Events"
+    nav=False leaves the homepage without the link (sitemap=True then is the only way in)."""
+    if layout not in LAYOUTS:
+        raise ValueError(f'Unknown layout {layout!r}; use {LAYOUTS}.')
+    if listing_format == 'detail_page':
+        raise ValueError('The listing needs a listing format, not detail_page.')
+    base = f'https://{slug}.eval.test'
+    listing_path, link_text = ('/calendar', 'Calendar') if layout == 'calendar_link' else ('/events', 'Events')
+    listing_variant = variant + ('+nolinks' if layout == 'listing_only' else '')
+    pages, labels = [], []
+
+    def listing(evs, path, extra=''):
+        html, page_labels, _ = render(evs, listing_format, venue=venue, timezone=timezone, variant=listing_variant,
+                                      captured_at=captured_at, base_url=base)
+        pages.append({'path': path, 'html': html.replace('</main>', f'{extra}</main>')})
+        return page_labels
+
+    if layout == 'paginated' and len(events) > 1:
+        half = (len(events) + 1) // 2
+        labels += listing(events[:half], listing_path,
+                          f'<p class="pager"><a rel="next" href="{listing_path}?page=2">Next page</a></p>')
+        labels += listing(events[half:], f'{listing_path}?page=2',
+                          f'<p class="pager"><a rel="prev" href="{listing_path}">Previous page</a></p>')
+        expect = [listing_path, f'{listing_path}?page=2']
+    else:
+        labels += listing(events, listing_path)
+        expect = [listing_path]
+
+    if layout != 'listing_only':
+        for event, label in zip(events, labels):
+            html, _, _ = render([event], 'detail_page', venue=venue, timezone=timezone, variant=variant,
+                                captured_at=captured_at, base_url=base)
+            path = label['url'][len(base):]
+            pages.append({'path': path, 'html': html})
+            expect.append(path)
+            if event.get('description'):
+                label['description'] = event['description']
+            if event.get('price') is not None:
+                label['ticket_price'] = float(event['price'])
+
+    links = f'<nav><a href="{listing_path}">{link_text}</a> <a href="/about">About</a></nav>' if nav else ''
+    home = (f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>{_e(venue)}</title></head><body>{links}'
+            f'<main><h1>{_e(venue)}</h1><p>A neighborhood bar and music room with local beer on tap, a full '
+            f'kitchen and live music most weekends.</p></main></body></html>')
+    pages.insert(0, {'path': '/', 'html': home})
+    if sitemap:
+        urls = ''.join(f'<url><loc>{_e(base + p["path"])}</loc></url>' for p in pages)
+        pages.append({'path': '/sitemap.xml', 'content_type': 'application/xml',
+                      'html': f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/'
+                              f'schemas/sitemap/0.9">{urls}</urlset>'})
+        pages.append({'path': '/robots.txt', 'content_type': 'text/plain',
+                      'html': f'User-agent: *\nAllow: /\nSitemap: {base}/sitemap.xml\n'})
+    return {'pages': pages, 'labels': labels, 'expect_fetched': expect, 'homepage': '/'}

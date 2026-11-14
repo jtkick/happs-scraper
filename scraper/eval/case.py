@@ -1,12 +1,15 @@
 """
 A case: one saved page, what the scraper parsed from it, and what it should
-have parsed. Reviewed cases live in tests/fixtures/<id>/ (golden tests and
+have parsed. A site case (kind 'site') is several pages crawled from its
+homepage (page.html) by the real spider (scraper/eval/sites.py). Reviewed cases live in tests/fixtures/<id>/ (golden tests and
 training data); unreviewed ones wait in review/inbox/<id>/.
 
     case.json         url, kind, captured_at, context, the true `events`, …
     page.html         the page as fetched
     parsed.json       the scraper's output when captured (never edited)
     ai_response.json  the model's raw answer when captured, replayed offline
+    site.json         a site case: [{url, file, status, content_type}] for site/<file>,
+                      and the model's answers by prompt hash ([{prompt_hash, model, response}])
 
 Labels in `events`: a key asserts its value, a missing key is not checked,
 null asserts the field is empty. `complete: false` means the labels are a
@@ -14,6 +17,7 @@ subset of the page's events, so extra parsed events are not errors.
 """
 from __future__ import annotations
 import json
+import shutil
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -30,8 +34,10 @@ CASE_FILE = 'case.json'
 PAGE_FILE = 'page.html'
 PARSED_FILE = 'parsed.json'
 AI_FILE = 'ai_response.json'
+SITE_FILE = 'site.json'
+SITE_DIR = 'site'
 
-KINDS = ('listing', 'detail')
+KINDS = ('listing', 'detail', 'site')
 SOURCES = ('manual', 'crawl', 'correction', 'page_review', 'report')
 
 # Fields a label may assert, in the order the review app shows them.
@@ -60,6 +66,11 @@ class Case:
     reviewed_at: Optional[str] = None
     parsed: Optional[dict] = None
     ai_response: Optional[dict] = None
+    # A site case: every page ({url, html, status, content_type}), the URLs a good crawl fetches,
+    # and the model's answers for its pages ({prompt_hash, model, response}).
+    site_pages: list[dict] = field(default_factory=list)
+    expect_fetched: list[str] = field(default_factory=list)
+    ai_responses: list[dict] = field(default_factory=list)
 
     @property
     def captured(self) -> datetime:
@@ -90,6 +101,8 @@ class Case:
                 problems.append(f'events[{i}] has unknown fields {sorted(unknown)}')
         if not self.html:
             problems.append('page.html is empty')
+        if self.kind == 'site' and not self.site_pages:
+            problems.append('a site case needs its pages')
         return problems
 
     # ── Disk ──────────────────────────────────────────────────────────────────
@@ -103,6 +116,13 @@ class Case:
         parsed, ai_response = _read(path / PARSED_FILE), _read(path / AI_FILE)
         case.parsed = json.loads(parsed) if parsed else None
         case.ai_response = json.loads(ai_response) if ai_response else None
+        site = _read(path / SITE_FILE)
+        if site:
+            site = json.loads(site)
+            case.site_pages = [{'url': p['url'], 'html': (path / SITE_DIR / p['file']).read_text(),
+                                'status': p.get('status', 200), 'content_type': p.get('content_type', 'text/html')}
+                               for p in site['pages']]
+            case.ai_responses = site.get('ai_responses') or []
         return case
 
     def save(self, path: Path) -> None:
@@ -110,7 +130,7 @@ class Case:
         data = {'version': 2}
         for key in ('url', 'kind', 'captured_at', 'source', 'source_ref', 'seed_context', 'partial',
                     'recipe', 'platform', 'events', 'not_events', 'complete', 'known_failures',
-                    'notes', 'reviewer', 'reviewed_at'):
+                    'expect_fetched', 'notes', 'reviewer', 'reviewed_at'):
             value = getattr(self, key)
             if value not in (None, '', [], {}) or key in ('events', 'complete'):
                 data[key] = value
@@ -121,6 +141,18 @@ class Case:
                 _write_json(path / name, value)
             else:
                 (path / name).unlink(missing_ok=True)
+        shutil.rmtree(path / SITE_DIR, ignore_errors=True)
+        if self.site_pages:
+            (path / SITE_DIR).mkdir()
+            pages = []
+            for i, page in enumerate(self.site_pages):
+                name = f'{i:03d}.txt'
+                (path / SITE_DIR / name).write_text(page['html'])
+                pages.append({'url': page['url'], 'file': name, 'status': page.get('status', 200),
+                              'content_type': page.get('content_type', 'text/html')})
+            _write_json(path / SITE_FILE, {'pages': pages, 'ai_responses': self.ai_responses})
+        else:
+            (path / SITE_FILE).unlink(missing_ok=True)
 
 
 def load_all(root: Path = FIXTURES_DIR) -> list[Case]:

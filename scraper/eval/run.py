@@ -33,6 +33,9 @@ class RunResult:
     ai_missing: bool = False
     ai_stale: bool = False
     ai_response: Optional[dict] = None                  # set by a live run
+    # A site case (scraper/eval/sites.py): every URL the crawl fetched, and the model's new answers.
+    fetched: list[str] = field(default_factory=list)
+    ai_responses: list[dict] = field(default_factory=list)
 
     def to_parsed(self) -> dict:
         return {'strategy': self.strategy, 'ai_used': self.ai_used,
@@ -41,6 +44,9 @@ class RunResult:
 
 def run_case(case: Case, ai: Optional[str] = 'replay', *, api_key: str = '',
              model: Optional[str] = None) -> RunResult:
+    if case.kind == 'site':
+        from scraper.eval.sites import run_site
+        return run_site(case, ai, api_key=api_key, model=model)
     result = RunResult()
     with time_machine.travel(case.captured, tick=False):
         response = HtmlResponse(url=case.url, body=case.html.encode('utf-8'), encoding='utf-8')

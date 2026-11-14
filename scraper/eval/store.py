@@ -98,7 +98,7 @@ class Store:
         """The stored case as a Case (at `version`, if given), with its page and AI answer: one request."""
         params = {'version': version} if version is not None else {}
         data = self.get(f'cases/{case_id}/bundle/', **params)
-        return case_from_api(data['case'], data['html'])
+        return case_from_api(data['case'], data['html'], data.get('site_pages'))
 
     # Shorthands, so callers don't build paths.
 
@@ -134,8 +134,9 @@ class Store:
         return self.post(path, {'worker': worker}, idempotent=False)
 
 
-def case_from_api(data: dict, html: str) -> Case:
+def case_from_api(data: dict, html: str, site_pages: Optional[list] = None) -> Case:
     ai = data.get('ai_response')
+    answers = [{k: a.get(k) for k in ('model', 'prompt_hash', 'response')} for a in data.get('ai_responses') or []]
     return Case(
         id=data.get('external_id') or data['id'], url=data['page']['url'], html=html, kind=data['kind'],
         captured_at=data['page']['captured_at'], source=data.get('source') or 'manual',
@@ -146,6 +147,9 @@ def case_from_api(data: dict, html: str) -> Case:
         notes=data.get('notes') or '', reviewer=data.get('reviewer') or None,
         reviewed_at=data.get('reviewed_at'), parsed=data.get('parsed'),
         ai_response={k: ai.get(k) for k in ('model', 'prompt_hash', 'response')} if ai and 'response' in ai else None,
+        site_pages=[{'url': p['url'], 'html': p['html'], 'status': p.get('status', 200),
+                     'content_type': p.get('content_type', 'text/html')} for p in site_pages or []],
+        expect_fetched=data.get('expect_fetched') or [], ai_responses=answers,
     )
 
 
@@ -171,3 +175,28 @@ def case_to_api(case: Case, *, tags: list[str] = (), reviewed: bool = False) -> 
 def _is_test_url(url: str) -> bool:
     from urllib.parse import urlparse
     return (urlparse(url).hostname or '').endswith('.test')
+
+
+def site_to_api(case: Case, *, tags: list[str] = (), reviewed: bool = False) -> dict:
+    """A site case as a PUT sites/by-key/<case.id>/ body."""
+    from urllib.parse import urlsplit
+    host = urlsplit(case.url).hostname or ''
+    slug = host[:-len('.eval.test')] if host.endswith('.eval.test') else host.split('.')[0]
+
+    def path(url):
+        parts = urlsplit(url)
+        return (parts.path or '/') + (f'?{parts.query}' if parts.query else '')
+    home = path(case.url)
+    data = {
+        'slug': slug, 'captured_at': case.captured_at, 'homepage': home, 'context': case.seed_context or {},
+        'pages': [{'path': path(p['url']), 'html': p['html'], 'status': p.get('status', 200),
+                   'content_type': p.get('content_type', 'text/html')} for p in case.site_pages],
+        'expect_fetched': case.expect_fetched, 'recipe': case.recipe or {}, 'complete': case.complete,
+        'not_events': case.not_events, 'known_failures': case.known_failures, 'notes': case.notes,
+        'source': case.source, 'labels': case.events, 'tags': list(tags), 'parsed': case.parsed,
+        'ai_responses': [{**a, 'origin': 'import'} for a in case.ai_responses],
+    }
+    if reviewed:
+        data['status'] = 'reviewed'
+        data['reviewer'] = case.reviewer or ''
+    return data

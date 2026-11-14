@@ -313,3 +313,49 @@ def test_mcp_generate_cases_writes_one_case_per_format_and_variant(mcp_tools, mo
     assert body['page']['url'] == 'https://tap-room.test/jsonld/long/' and body['page']['origin'] == 'synthetic'
     assert body['tags'] == ['synthetic', 'fmt:jsonld', 'variant:long']
     assert out['made'][0]['capture_found'] == 3 and out['made'][2]['capture_found'] == 0
+
+
+def _site_case(**kw):
+    from scraper.eval.synth import default_events, render_site
+    captured = '2026-09-15T12:00:00+00:00'
+    site = render_site(default_events(captured), slug='brew', venue='Brewpub', captured_at=captured, **kw)
+    base = 'https://brew.eval.test'
+    return Case(id='site-brew', url=base + '/', html=site['pages'][0]['html'], kind='site', captured_at=captured,
+                seed_context={'location_title': 'Brewpub', 'timezone': 'America/New_York'}, events=site['labels'],
+                site_pages=[{'url': base + p['path'], 'html': p['html'], 'status': 200,
+                             'content_type': p.get('content_type', 'text/html')} for p in site['pages']],
+                expect_fetched=[base + p for p in site['expect_fetched']])
+
+
+def test_a_site_is_crawled_offline_and_scored_on_discovery():
+    case = _site_case()
+    result = run_case(case, ai=None)
+    score = score_case(case, result)
+    assert score['failures'] == [] and score['discovery']['missing'] == []
+    assert 'https://brew.eval.test/events/trivia-night' in result.fetched
+    assert {e['description'] for e in result.events} >= {'Five local comics.'}     # read from the event's page
+
+
+def test_a_site_without_a_way_in_is_missing_its_pages():
+    score = score_case(case := _site_case(nav=False), run_case(case, ai=None))
+    assert score['recall'] == 0
+    assert 'https://brew.eval.test/events' in score['discovery']['missing']
+
+
+def test_site_cases_round_trip_on_disk_and_through_the_store(tmp_path):
+    from scraper.eval.store import site_to_api
+    case = _site_case(sitemap=True)
+    case.ai_responses = [{'model': 'm', 'prompt_hash': 'h', 'response': {'events': []}}]
+    case.save(tmp_path / case.id)
+    back = Case.load(tmp_path / case.id)
+    assert (back.kind, back.site_pages, back.expect_fetched, back.ai_responses) == (
+        'site', case.site_pages, case.expect_fetched, case.ai_responses)
+    body = site_to_api(back)
+    assert body['slug'] == 'brew' and body['homepage'] == '/'
+    assert {p['path'] for p in body['pages']} >= {'/', '/events', '/sitemap.xml', '/robots.txt'}
+    bundle_case = {**api_case(back), 'kind': 'site', 'expect_fetched': back.expect_fetched,
+                   'ai_responses': [{'id': 'a', **a} for a in back.ai_responses]}
+    again = case_from_api(bundle_case, back.html, [{'url': p['url'], 'html': p['html'], 'status': 200,
+                                                     'content_type': p['content_type']} for p in back.site_pages])
+    assert (again.site_pages, again.expect_fetched, again.ai_responses) == (
+        back.site_pages, back.expect_fetched, back.ai_responses)

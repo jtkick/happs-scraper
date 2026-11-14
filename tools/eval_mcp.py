@@ -222,6 +222,76 @@ def generate_cases(events: Optional[list[dict]] = None, formats: Optional[list[s
     return {'made': made, 'skipped': skipped, 'ai': mode or 'none'}
 
 
+def _site_case(external_id: str, slug: str, site: dict, *, captured_at: str, venue: str, timezone: str,
+               ai: str, tags: list, notes: str) -> dict:
+    """Crawl the site once (recording the model's answers when ai='live') and store it as a site case."""
+    from scraper.eval.case import Case
+    from scraper.eval.run import run_case
+    base = f'https://{slug}.eval.test'
+    context = {'location_title': venue, 'timezone': timezone}
+    home = base + site.get('homepage', '/')
+    pages = [{'url': base + p['path'], 'html': p['html'], 'status': p.get('status', 200),
+              'content_type': p.get('content_type') or 'text/html; charset=utf-8'} for p in site['pages']]
+    home_html = next((p['html'] for p in pages if p['url'] == home), None)
+    if home_html is None:
+        raise ToolError(f'No page has the homepage path {site.get("homepage", "/")}.')
+    case = Case(id=external_id, url=home, html=home_html, kind='site', captured_at=captured_at,
+                seed_context=context, events=site['labels'], site_pages=pages,
+                expect_fetched=[e if e.startswith('http') else base + e for e in site.get('expect_fetched') or []])
+    api_key = _api_key() if ai == 'live' else ''
+    result = run_case(case, ai='live' if api_key else None, api_key=api_key)
+    body = {'slug': slug, 'captured_at': captured_at, 'homepage': site.get('homepage', '/'), 'context': context,
+            'pages': site['pages'], 'labels': site['labels'], 'expect_fetched': site.get('expect_fetched') or [],
+            'tags': tags, 'notes': notes, 'complete': True,
+            'parsed': {**result.to_parsed(), 'fetched': result.fetched},
+            'ai_responses': [{**a, 'origin': 'capture'} for a in result.ai_responses]}
+    data = call(store().put, f'sites/by-key/{external_id}/', body)
+    from scraper.eval.sites import discovery
+    return {**_brief_case(data), 'site_pages': len(pages), 'capture_found': len(result.events),
+            'capture_discovery': discovery(case, result.fetched), 'ai': 'live' if api_key else 'none'}
+
+
+@mcp.tool()
+def generate_site(events: Optional[list[dict]] = None, layout: str = 'listing_details',
+                  listing_format: str = 'jsonld', slug: str = 'venue', venue: str = 'The Test Venue',
+                  timezone: str = 'America/New_York', variant: str = 'long', nav: bool = True, sitemap: bool = False,
+                  captured_at: str = '2026-09-15T12:00:00+00:00', ai: str = 'live',
+                  external_id: Optional[str] = None, tags: Optional[list[str]] = None) -> dict:
+    """A small test site the real spider crawls offline from its homepage (https://<slug>.eval.test/), to measure
+    finding the events page and following links as well as parsing. layout: listing_details (homepage → /events →
+    each event's page), listing_only, paginated (/events and /events?page=2), calendar_link (the link says
+    "Calendar"). listing_format: any generate_cases format but detail_page. nav=False drops the homepage link;
+    sitemap=True adds robots.txt + sitemap.xml. events and variant as in generate_cases. ai='live' crawls once now
+    to record the model's answers for replays. Tagged site, layout:<layout>, fmt:<listing_format>."""
+    from scraper.eval.synth import default_events, render_site
+    slug = _slug(slug)
+    try:
+        site = render_site(events or default_events(captured_at), layout=layout, listing_format=listing_format,
+                           slug=slug, venue=venue, timezone=timezone, variant=variant, captured_at=captured_at,
+                           nav=nav, sitemap=sitemap)
+    except ValueError as exc:
+        raise ToolError(str(exc))
+    flags = ''.join(f'-{f}' for f, on in (('nonav', not nav), ('sitemap', sitemap)) if on)
+    external_id = external_id or f'site-{slug}-{layout}-{listing_format}{flags}'
+    return _site_case(external_id, slug, site, captured_at=captured_at, venue=venue, timezone=timezone, ai=ai,
+                      tags=['site', f'layout:{layout}', f'fmt:{listing_format}', *(tags or [])],
+                      notes=f'Generated site: {layout}, {listing_format}, {variant}, nav={nav}, sitemap={sitemap}.')
+
+
+@mcp.tool()
+def create_site(slug: str, pages: list[dict], labels: list[dict], expect_fetched: Optional[list[str]] = None,
+                homepage: str = '/', venue: str = 'The Test Venue', timezone: str = 'America/New_York',
+                captured_at: str = '2026-09-15T12:00:00+00:00', ai: str = 'live', external_id: Optional[str] = None,
+                tags: Optional[list[str]] = None, notes: str = '') -> dict:
+    """A hand-written test site: pages [{path: '/events', html, status?, content_type?}] served under
+    https://<slug>.eval.test/ (add /robots.txt or /sitemap.xml as pages if wanted), labels for every event the
+    crawl should send, and expect_fetched paths a good crawl visits."""
+    slug = _slug(slug)
+    site = {'pages': pages, 'labels': labels, 'expect_fetched': expect_fetched or [], 'homepage': homepage}
+    return _site_case(external_id or f'site-{slug}', slug, site, captured_at=captured_at, venue=venue,
+                      timezone=timezone, ai=ai, tags=['site', *(tags or [])], notes=notes)
+
+
 @mcp.tool()
 def derive_case(case_id: str, external_id: Optional[str] = None, replace: Optional[list[dict]] = None,
                 remove_selectors: Optional[list[str]] = None, html: Optional[str] = None,

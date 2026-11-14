@@ -55,7 +55,9 @@ def score_one(case: Case, ai: Optional[str], api_key: str, model: Optional[str])
     score['duration_ms'] = duration
     return {
         'score': score, 'duration_ms': duration, 'ai_response': result.ai_response,
-        'result': {**result.to_parsed(), 'ai_missing': result.ai_missing, 'ai_stale': result.ai_stale},
+        'ai_responses': result.ai_responses,
+        'result': {**result.to_parsed(), 'ai_missing': result.ai_missing, 'ai_stale': result.ai_stale,
+                   **({'fetched': result.fetched} if case.kind == 'site' else {})},
     }
 
 
@@ -108,8 +110,10 @@ def run_one(store: Store, run: dict, worker: str, api_key: str = '', jobs: int =
             batch.append({'case_id': case_id, 'error': error})
         else:
             scores[case_id] = out['score']
-            if ai == 'live' and out['ai_response']:
-                store.post(f'cases/{case_id}/ai-responses/', {**out['ai_response'], 'origin': 'live'})
+            if ai == 'live':
+                for answer in [out['ai_response'], *out['ai_responses']]:
+                    if answer:
+                        store.post(f'cases/{case_id}/ai-responses/', {**answer, 'origin': 'live'})
             batch.append(_report(case_id, out))
         send()
 

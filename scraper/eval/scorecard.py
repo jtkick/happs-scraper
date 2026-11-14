@@ -35,7 +35,12 @@ def score_case(case: Case, result: RunResult) -> dict:
             methods[method]['fields'] += 1
             methods[method]['fields_right'] += r.ok
     known = {k['path'] for k in case.known_failures}
+    extra = {}
+    if case.kind == 'site':
+        from scraper.eval.sites import discovery
+        extra['discovery'] = discovery(case, result.fetched)
     return {
+        **extra,
         'source': case.source, 'strategy': result.strategy, 'ai_used': result.ai_used,
         'ai_missing': result.ai_missing, 'ai_stale': result.ai_stale, 'recall': c.recall, 'precision': c.precision,
         'failures': c.failures, 'new_failures': [p for p in c.failures if p not in known],

@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scraper.eval.case import FIXTURES_DIR, INBOX_DIR, Case
-from scraper.eval.store import Store, StoreError, case_to_api
+from scraper.eval.store import Store, StoreError, case_to_api, site_to_api
 
 BATCH_BYTES = 8 * 1024 * 1024
 BATCH_ITEMS = 50
@@ -46,6 +46,15 @@ def push(store: Store, root: Path, tags: list[str], reviewed: bool) -> dict:
 
     for path in sorted(p for p in root.iterdir() if (p / 'case.json').exists()):
         case = Case.load(path)
+        if case.kind == 'site':
+            # Sites go one at a time, pages and all.
+            try:
+                store.put(f'sites/by-key/{case.id}/', site_to_api(case, tags=tags, reviewed=reviewed))
+                totals['updated'] += 1
+            except StoreError as exc:
+                totals['refused'] += 1
+                print(f'  {case.id}: {exc}')
+            continue
         item = {**case_to_api(case, tags=tags, reviewed=reviewed), 'external_id': case.id}
         weight = len(case.html.encode('utf-8'))
         if batch and (size + weight > BATCH_BYTES or len(batch) >= BATCH_ITEMS):
