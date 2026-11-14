@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from scraper.eval.case import LABEL_FIELDS, Case
+from scraper.eval.compare import compare
 from scraper.eval.run import run_case
 from scraper.eval.scorecard import aggregate, score_case
 from scraper.eval.store import Store, StoreError
@@ -52,11 +53,16 @@ def score_one(case: Case, ai: Optional[str], api_key: str, model: Optional[str])
     result = run_case(case, ai=ai, api_key=api_key, model=model)
     score = score_case(case, result)
     duration = round((time.monotonic() - started) * 1000)
+    # Which parsed event each label was matched to (label index → event index), for showing them side by side.
+    c = compare(case.events, result.events, not_events=case.not_events, complete=case.complete,
+                timezone_name=case.timezone)
+    pairs = {str(m.index): next(j for j, e in enumerate(result.events) if e is m.actual)
+             for m in c.matches if m.actual is not None}
     score['duration_ms'] = duration
     return {
         'score': score, 'duration_ms': duration, 'ai_response': result.ai_response,
         'ai_responses': result.ai_responses,
-        'result': {**result.to_parsed(), 'ai_missing': result.ai_missing, 'ai_stale': result.ai_stale,
+        'result': {**result.to_parsed(), 'ai_missing': result.ai_missing, 'ai_stale': result.ai_stale, 'pairs': pairs,
                    **({'fetched': result.fetched} if case.kind == 'site' else {})},
     }
 
