@@ -184,7 +184,7 @@ def derive_case(case_id: str, external_id: Optional[str] = None, replace: Option
     source = call(store().get, f'cases/{case_id}/')
     page_id = source['page']['id']
     if remove_selectors or html is not None:
-        text = html if html is not None else store().html(page_id)
+        text = html if html is not None else call(store().html, page_id)
         if remove_selectors:
             text = _remove(text, remove_selectors)
         for op in replace or []:
@@ -248,13 +248,17 @@ def find_cases(tag: Optional[str] = None, status: Optional[str] = None, kind: Op
 
 
 @mcp.tool()
-def get_case(case_id: str, version: Optional[int] = None, include_capture_parse: bool = False) -> dict:
-    """A case with its labels (each with id and index). version gives it as it was then."""
+def get_case(case_id: str, version: Optional[int] = None, include_capture_parse: bool = False,
+             labels_from: int = 0, labels_limit: int = 100) -> dict:
+    """A case with its labels (each with id and index). version gives it as it was then. A big listing's
+    labels come labels_limit at a time from labels_from (labels_total says how many there are)."""
     params = {'include': 'parsed'} if include_capture_parse else {}
     if version is not None:
         params['version'] = version
-    data = call(store().get, f'cases/{case_id}/', **params)
+    data = call(store().case, case_id, **params)
     out = _brief_case(data)
+    out['labels_total'] = len(out['labels'])
+    out['labels'] = out['labels'][labels_from:labels_from + max(1, labels_limit)]
     if include_capture_parse and data.get('parsed'):
         out['capture_parse'] = [_brief_event(e) for e in data['parsed'].get('events', [])]
     return out
@@ -286,6 +290,43 @@ def mark_reviewed(case_id: str, version: int) -> dict:
 def case_history(case_id: str) -> dict:
     """Every version of a case: who changed it, when, and which fields."""
     return call(store().get, f'cases/{case_id}/history/')
+
+
+@mcp.tool()
+def accept_failures(case_id: str, version: int, paths: list[str], reason: str) -> dict:
+    """Record mismatch paths (from preview or a run, e.g. 'events[2].end_datetime') as known failures of the
+    case: scraper bugs it's expected to show until they're fixed, so runs report them apart from new ones."""
+    data = call(store().case, case_id)
+    known = {k['path']: k for k in data.get('known_failures') or []}
+    for path in paths:
+        known[path] = {'path': path, 'reason': reason}
+    return _brief_case(call(store().patch_case, case_id, version, {'known_failures': list(known.values())}))
+
+
+@mcp.tool()
+def coverage() -> dict:
+    """What the test data covers: cases by tag, status, kind, platform and source; how many labels assert each
+    field (reviewed and all); the newest finished run by extraction strategy; and which workers are up."""
+    stats = call(store().get, 'stats/')
+    stats['workers'] = call(store().schema).get('workers', [])
+    return stats
+
+
+@mcp.tool()
+def list_snapshots(status: Optional[str] = 'pending', domain: Optional[str] = None, limit: int = 50) -> dict:
+    """Pages crawls saved (where the model ran, an event was held or dropped, or an events page came back empty).
+    case_made says whether a case was already made from one; turn one into a case with case_from_snapshot."""
+    params = {k: v for k, v in dict(status=status, domain=domain).items() if v}
+    data = call(store().get, 'snapshots/', limit=min(limit, 200), **params)
+    return {'snapshots': data['results'], 'more': bool(data.get('next'))}
+
+
+@mcp.tool()
+def case_from_snapshot(snapshot_id: str, external_id: Optional[str] = None, tags: Optional[list[str]] = None) -> dict:
+    """A draft case from a crawl's saved page, its labels started from what the crawl parsed (marked incomplete
+    until you check them against read_page_text)."""
+    return _brief_case(call(store().post, f'cases/from-snapshot/{snapshot_id}/',
+                            {'external_id': external_id, 'tags': tags or []}))
 
 
 # ── Labels ────────────────────────────────────────────────────────────────────

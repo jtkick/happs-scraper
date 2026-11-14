@@ -267,3 +267,27 @@ def test_mcp_says_when_no_worker_will_run_it(mcp_tools, monkeypatch):
     monkeypatch.setattr(fake, 'queue_run', lambda **body: {'id': 'r1', 'status': 'queued'}, raising=False)
     out = call_tool(module, 'run_suite', {'case_ids': ['c1'], 'wait': 0})
     assert 'No eval worker' in out['note']
+
+
+def test_mcp_accept_failures_keeps_earlier_reasons(mcp_tools, monkeypatch):
+    module, fake = mcp_tools
+    fake.cases['c1']['known_failures'] = [{'path': 'events[0]', 'reason': 'old'}]
+    sent = {}
+
+    def patch_case(case_id, version, changes):
+        sent.update(changes)
+        return {**fake.cases['c1'], **changes, 'version': version + 1}
+    monkeypatch.setattr(fake, 'case', lambda case_id, **p: copy.deepcopy(fake.cases[case_id]), raising=False)
+    monkeypatch.setattr(fake, 'patch_case', patch_case, raising=False)
+    out = call_tool(module, 'accept_failures', {'case_id': 'c1', 'version': 1, 'paths': ['events[1].start_datetime'],
+                                                'reason': 'yearless date'})
+    assert sent['known_failures'] == [{'path': 'events[0]', 'reason': 'old'},
+                                      {'path': 'events[1].start_datetime', 'reason': 'yearless date'}]
+    assert out['version'] == 2
+
+
+def test_mcp_get_case_pages_labels(mcp_tools, monkeypatch):
+    module, fake = mcp_tools
+    monkeypatch.setattr(fake, 'case', lambda case_id, **p: copy.deepcopy(fake.cases[case_id]), raising=False)
+    out = call_tool(module, 'get_case', {'case_id': 'c1', 'labels_from': 1, 'labels_limit': 1})
+    assert (out['labels_total'], [lb['index'] for lb in out['labels']]) == (2, [1])
