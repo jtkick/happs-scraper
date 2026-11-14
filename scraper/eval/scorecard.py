@@ -11,6 +11,8 @@ from scraper.eval.case import Case
 from scraper.eval.compare import compare
 from scraper.eval.run import RunResult, run_case
 
+SLOWEST = 5
+
 
 def scorecard(cases: Iterable[Case], *, ai: Optional[str] = 'replay', api_key: str = '',
               model: Optional[str] = None) -> dict:
@@ -35,7 +37,7 @@ def score_case(case: Case, result: RunResult) -> dict:
     known = {k['path'] for k in case.known_failures}
     return {
         'source': case.source, 'strategy': result.strategy, 'ai_used': result.ai_used,
-        'ai_missing': result.ai_missing, 'recall': c.recall, 'precision': c.precision,
+        'ai_missing': result.ai_missing, 'ai_stale': result.ai_stale, 'recall': c.recall, 'precision': c.precision,
         'failures': c.failures, 'new_failures': [p for p in c.failures if p not in known],
         'counts': {
             'labelled': len(c.matches), 'found': c.found,
@@ -65,8 +67,12 @@ def aggregate(scores: dict) -> dict:
         per_case[case_id] = {k: v for k, v in score.items() if k != 'counts'}
 
     total_parsed = found + parsed_wrong
+    timed = [(case_id, p['duration_ms']) for case_id, p in per_case.items() if p.get('duration_ms') is not None]
     return {
         'cases': len(per_case),
+        'ai_missing': sum(1 for p in per_case.values() if p.get('ai_missing')),
+        'ai_stale': sum(1 for p in per_case.values() if p.get('ai_stale')),
+        'slowest': [{'case': c, 'ms': ms} for c, ms in sorted(timed, key=lambda t: -t[1])[:SLOWEST]],
         'events': labelled,
         'recall': found / labelled if labelled else 1.0,
         'precision': found / total_parsed if total_parsed else 1.0,

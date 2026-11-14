@@ -378,11 +378,13 @@ def preview(case_id: str, ai: str = 'replay', record_answer: bool = False) -> di
 
 @mcp.tool()
 def run_suite(suite: Optional[str] = None, case_ids: Optional[list[str]] = None, ai: str = 'replay',
-              name: str = '', baseline: Optional[str] = None, wait: int = 60) -> dict:
-    """Queue a scored run over a suite or a list of case ids for the worker (tools/eval_worker.py), and
-    wait up to `wait` seconds for it. ai: 'replay', 'live' (costs credits), 'none'. baseline: a run id
-    to compare with later."""
-    body: dict[str, Any] = {'ai': ai, 'name': name, 'wait': max(0, min(wait, 60))}
+              name: str = '', baseline: Optional[str] = None, local: bool = False, wait: int = 60) -> dict:
+    """Score the scraper over a suite or a list of case ids. local=True runs it here and returns the
+    finished run (good for a few dozen cases); otherwise it's queued for the worker (tools/eval_worker.py)
+    and this waits up to `wait` seconds. ai: 'replay', 'live' (costs credits), 'none'. baseline: a run id,
+    or 'latest' for the suite's newest finished run."""
+    from scraper.eval.runner import SchemaMismatch, check_schema, run_one
+    body: dict[str, Any] = {'ai': ai, 'name': name, 'wait': 0 if local else max(0, min(wait, 60))}
     if suite:
         body['suite'] = suite
     elif case_ids:
@@ -391,7 +393,20 @@ def run_suite(suite: Optional[str] = None, case_ids: Optional[list[str]] = None,
         raise ToolError('Send suite or case_ids.')
     if baseline:
         body['baseline'] = baseline
-    return call(store().post, 'runs/', body)
+    run = call(store().queue_run, **body)
+    if local:
+        try:
+            check_schema(store())
+        except SchemaMismatch as exc:
+            raise ToolError(str(exc))
+        worker = f'mcp-{os.getpid()}'
+        leased = call(store().lease, worker, run['id'])
+        api_key = _api_key() if ai == 'live' else ''
+        return call(run_one, store(), leased, worker, api_key)
+    if run['status'] == 'queued' and not any(w['active'] for w in call(store().schema).get('workers', [])):
+        run['note'] = ('No eval worker has asked for work in the last two minutes, so this run will wait. '
+                       'Start one (python tools/eval_worker.py) or call run_suite with local=True.')
+    return run
 
 
 @mcp.tool()

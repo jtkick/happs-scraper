@@ -95,12 +95,43 @@ class Store:
         return self.request('GET', f'pages/{page_id}/html/', raw=True)
 
     def load_case(self, case_id: str, version: Optional[int] = None) -> Case:
-        """The stored case as a Case (at `version`, if given), with its page and AI answer."""
-        params = {'include': 'ai,parsed'}
-        if version is not None:
-            params['version'] = version
-        data = self.get(f'cases/{case_id}/', **params)
-        return case_from_api(data, self.html(data['page']['id']))
+        """The stored case as a Case (at `version`, if given), with its page and AI answer: one request."""
+        params = {'version': version} if version is not None else {}
+        data = self.get(f'cases/{case_id}/bundle/', **params)
+        return case_from_api(data['case'], data['html'])
+
+    # Shorthands, so callers don't build paths.
+
+    def schema(self) -> dict:
+        return self.get('schema/')
+
+    def case(self, case_id: str, **params) -> dict:
+        return self.get(f'cases/{case_id}/', **params)
+
+    def find_cases(self, **params) -> dict:
+        return self.get('cases/', **params)
+
+    def patch_case(self, case_id: str, version: int, changes: dict) -> dict:
+        return self.patch(f'cases/{case_id}/', {**changes, 'version': version})
+
+    def set_labels(self, case_id: str, version: int, labels: list) -> dict:
+        return self.put(f'cases/{case_id}/labels/', {'version': version, 'labels': labels})
+
+    def review(self, case_id: str, version: int) -> dict:
+        return self.post(f'cases/{case_id}/review/', {'version': version}, idempotent=False)
+
+    def run(self, run_id: str) -> dict:
+        return self.get(f'runs/{run_id}/')
+
+    def run_cases(self, run_id: str, **params) -> list:
+        return self.get(f'runs/{run_id}/cases/', **params)
+
+    def queue_run(self, **body) -> dict:
+        return self.post('runs/', body)
+
+    def lease(self, worker: str, run_id: Optional[str] = None) -> Optional[dict]:
+        path = f'runs/{run_id}/lease/' if run_id else 'runs/lease/'
+        return self.post(path, {'worker': worker}, idempotent=False)
 
 
 def case_from_api(data: dict, html: str) -> Case:

@@ -50,23 +50,35 @@ class FakeStore:
         self.html_by_page = {'p1': HTML}
         self.writes = []
         self.leases = []
+        self.run_items = []
 
     def get(self, path, **params):
         if path.startswith('cases/') and path.count('/') == 2:
             return copy.deepcopy(self.cases[path.split('/')[1]])
         if path == 'schema/':
-            return {'label_fields': ['title']}
+            from scraper.eval.case import LABEL_FIELDS
+            return {'label_fields': list(LABEL_FIELDS), 'workers': []}
+        if path.startswith('runs/') and path.endswith('/cases/'):
+            return copy.deepcopy(self.run_items)
         raise AssertionError(path)
 
     def html(self, page_id):
         return self.html_by_page[page_id]
 
     def load_case(self, case_id, version=None):
+        if case_id not in self.cases:
+            raise StoreError(404, [{'path': '', 'code': 'not_found', 'message': 'No case has that id.'}])
         return case_from_api(self.cases[case_id], self.html('p1'))
+
+    def schema(self):
+        return self.get('schema/')
+
+    def lease(self, worker, run_id=None):
+        return self.post(f'runs/{run_id}/lease/' if run_id else 'runs/lease/', {'worker': worker})
 
     def post(self, path, data=None, *, idempotent=True):
         self.writes.append((path, data))
-        if path == 'runs/lease/':
+        if path.endswith('lease/'):
             return self.leases.pop(0) if self.leases else None
         if path.endswith('/finish/'):
             return {'status': 'failed' if data.get('error') else 'done', 'scorecard': data.get('scorecard')}
@@ -99,7 +111,7 @@ def test_scoring_one_case_at_a_time_adds_up_to_the_scorecard():
 
 
 def test_worker_scores_each_case_and_finishes_the_run():
-    from tools.eval_worker import run_one
+    from scraper.eval.runner import run_one
     good = synthetic_case()
     broken = synthetic_case(captured_at='not a date')
     fake = FakeStore({'c1': api_case(good), 'c2': api_case(broken, 'c2')})
@@ -120,7 +132,7 @@ def test_worker_scores_each_case_and_finishes_the_run():
 
 
 def test_worker_refuses_a_live_run_without_a_key():
-    from tools.eval_worker import run_one
+    from scraper.eval.runner import run_one
     fake = FakeStore({})
     run_one(fake, {'id': 'r1', 'ai': 'live', 'items': []}, 'w', api_key='')
     assert 'ANTHROPIC_API_KEY' in fake.writes[-1][1]['error']
@@ -183,3 +195,75 @@ def test_mcp_lists_its_tools(mcp_tools):
     module, _ = mcp_tools
     names = {t.name for t in asyncio.run(module.mcp.list_tools())}
     assert {'capture_page', 'create_case', 'preview', 'set_labels', 'run_suite', 'compare_runs'} <= names
+
+
+def _run(*case_ids, done=()):
+    return {'id': 'r1', 'ai': 'replay', 'model': '',
+            'items': [{'case_id': c, 'case_version': 1, 'status': 'done' if c in done else 'pending'}
+                      for c in case_ids]}
+
+
+def _results(fake):
+    return {r['case_id']: r for path, data in fake.writes if path == 'runs/r1/results/' for r in data['results']}
+
+
+def test_a_resumed_run_skips_finished_cases_but_counts_them():
+    from scraper.eval.runner import run_one, score_one
+    case = synthetic_case()
+    fake = FakeStore({'c1': api_case(case), 'c2': api_case(case, 'c2')})
+    first = score_one(case_from_api(fake.cases['c1'], HTML), 'replay', '', None)['score']
+    fake.run_items = [{'case_id': 'c1', 'status': 'done', 'failures': first['failures'],
+                       'new_failures': first['new_failures'],
+                       'stats': {k: v for k, v in first.items() if k not in ('failures', 'new_failures')}}]
+    run_one(fake, _run('c1', 'c2', done=('c1',)), 'w')
+    assert list(_results(fake)) == ['c2']
+    assert fake.writes[-1][1]['scorecard']['cases'] == 2
+    assert fake.writes[-1][1]['scorecard']['events'] == 4
+
+
+def test_a_missing_case_is_that_cases_error():
+    from scraper.eval.runner import run_one
+    fake = FakeStore({'c1': api_case(synthetic_case())})
+    done = run_one(fake, _run('c1', 'gone'), 'w')
+    results = _results(fake)
+    assert 'Could not load' in results['gone']['error'] and 'error' not in results['c1']
+    assert done['status'] == 'done'
+
+
+def test_parallel_jobs_score_the_same():
+    from scraper.eval.runner import run_one
+    cases = {f'c{i}': api_case(synthetic_case(), f'c{i}') for i in range(4)}
+    one, two = FakeStore(copy.deepcopy(cases)), FakeStore(copy.deepcopy(cases))
+    run_one(one, _run(*cases), 'w', jobs=1)
+    run_one(two, _run(*cases), 'w', jobs=2)
+    strip = lambda card: {k: v for k, v in card.items() if k != 'slowest'}  # noqa: E731
+    for card in (one.writes[-1][1]['scorecard'], two.writes[-1][1]['scorecard']):
+        for entry in card['per_case'].values():
+            entry.pop('duration_ms')
+    assert strip(one.writes[-1][1]['scorecard']) == strip(two.writes[-1][1]['scorecard'])
+    assert all('duration_ms' in r['stats'] for r in _results(two).values())
+
+
+def test_schema_mismatch_stops_the_worker():
+    from scraper.eval.runner import SchemaMismatch, check_schema
+    fake = FakeStore({})
+    fake.get = lambda path, **p: {'label_fields': ['title', 'colour']}
+    with pytest.raises(SchemaMismatch, match='colour'):
+        check_schema(fake)
+
+
+def test_mcp_local_run_scores_in_process(mcp_tools, monkeypatch):
+    module, fake = mcp_tools
+    fake.leases = [_run('c1')]
+    queued = {'id': 'r1', 'status': 'queued', 'counts': {}}
+    monkeypatch.setattr(fake, 'queue_run', lambda **body: queued, raising=False)
+    out = call_tool(module, 'run_suite', {'case_ids': ['c1'], 'local': True})
+    assert out['status'] == 'done'
+    assert list(_results(fake)) == ['c1']
+
+
+def test_mcp_says_when_no_worker_will_run_it(mcp_tools, monkeypatch):
+    module, fake = mcp_tools
+    monkeypatch.setattr(fake, 'queue_run', lambda **body: {'id': 'r1', 'status': 'queued'}, raising=False)
+    out = call_tool(module, 'run_suite', {'case_ids': ['c1'], 'wait': 0})
+    assert 'No eval worker' in out['note']
