@@ -31,6 +31,7 @@ from html import unescape
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlsplit
 
+from scraper.extractors import dates as dates_extractor
 from scraper.text import main_text
 from scraper.util import fold
 
@@ -156,6 +157,10 @@ def extract_many(html: str, base_url: str, api_key: str, *,
 
     haystack = fold(text)
     hrefs = _hrefs(html, base_url)
+    published = _published(html)
+    if published and any(int(y) > published.year for y in _YEAR.findall(text)):
+        published = None    # the page talks about later years: it's kept up to date, not an old post
+    today = today or date.today()
     events = []
     for event in data.get('events', []):
         clean = {k: v for k, v in event.items() if v not in (None, '')}
@@ -168,8 +173,53 @@ def extract_many(html: str, base_url: str, api_key: str, *,
             link = clean.get(key)
             if link and (_same_page(link, base_url) or _link_key(link) not in hrefs):
                 del clean[key]
+        _check_date(clean, today, published)
         events.append(clean)
     return AIResult(events=events, truncated=truncated)
+
+
+_WEEKDAYS = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
+_PAGE_DATE = re.compile(r'(?:article:(?:published|modified)_time"\s+content="|"date(?:Published|Modified)"\s*:\s*")'
+                        r'(\d{4}-\d{2}-\d{2})')
+_YEAR = re.compile(r'\b(?:19|20)\d{2}\b')
+_RELATIVE_DAY = re.compile(r'\b(?:today|tonight|tomorrow|this (?:week|weekend)|mon|tue|wed|thu|fri|sat|sun)', re.IGNORECASE)
+
+
+def _published(html: str) -> Optional[date]:
+    """When the page was last written (its latest published/modified date): an evergreen page first
+    published years ago and kept up to date is as new as its last edit."""
+    found = [date.fromisoformat(d) for d in _PAGE_DATE.findall(html or '')]
+    return max(found) if found else None
+
+
+def _check_date(event: dict, today: date, published: Optional[date]) -> None:
+    """
+    The model's date against its own evidence. With no date in the evidence ("Every June / Anniversary
+    Party"), a start on the 1st of a month at midnight or on today is a placeholder: the date is
+    unknown, so the start goes. Yearless dates on a dated post ("July 2, 16 | 6 p.m." under a July 2026
+    post) are that post's year, not next year's, and past if that makes them past.
+    """
+    start = str(event.get('start_datetime') or '')
+    if not re.match(r'\d{4}-\d{2}-\d{2}', start):
+        return
+    day = date.fromisoformat(start[:10])
+    evidence = event.get('evidence') or ''
+    if not dates_extractor.find_dates(evidence) and not _RELATIVE_DAY.search(evidence):
+        if day == today or (day.day == 1 and start[10:] in ('', 'T00:00', 'T00:00:00')):
+            event.pop('start_datetime')
+            event.pop('end_datetime', None)
+        return
+    if published and day.year > published.year and not _YEAR.search(evidence) and dates_extractor.find_dates(evidence):
+        try:
+            moved = day.replace(year=published.year)
+        except ValueError:
+            return
+        weekdays = {i for i, name in enumerate(_WEEKDAYS) if re.search(rf'\b{name}', evidence, re.IGNORECASE)}
+        if moved >= published and (not weekdays or moved.weekday() in weekdays):
+            for key in ('start_datetime', 'end_datetime'):
+                value = str(event.get(key) or '')
+                if value[:4] == str(day.year):
+                    event[key] = str(published.year) + value[4:]
 
 
 _HREF = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)

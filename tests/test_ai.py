@@ -37,7 +37,8 @@ def stub(monkeypatch):
 
 def event(title, evidence, **extra):
     base = {k: None for k in ai.OUTPUT_KEYS}
-    base.update(title=title, start_datetime='2026-06-05T19:00', evidence=evidence, **extra)
+    base.update(title=title, start_datetime='2026-06-05T19:00', evidence=evidence)
+    base.update(extra)
     return base
 
 
@@ -108,3 +109,31 @@ def test_pick_events_links_only_returns_offered_urls(stub):
     stub({'urls': ['https://t.test/events', 'https://evil.test/']})
     links = [('Events', 'https://t.test/events'), ('Menu', 'https://t.test/menu')]
     assert ai.pick_events_links(links, 'https://t.test/', 'key') == ['https://t.test/events']
+
+
+def _page_with(text, head=''):
+    return f'<html><head>{head}</head><body><article><p>{text} {PAGE_TEXT}</p></article></body></html>'
+
+
+def test_a_placeholder_date_with_no_date_in_the_evidence_is_dropped(stub):
+    stub({'events': [event('Anniversary Party', 'Every June', start_datetime='2027-06-01'),
+                     event('Tasting', 'Join us for a free tasting', start_datetime='2026-06-01T18:00')]})
+    html = _page_with('Every June Anniversary Party. Join us for a free tasting.')
+    first, second = ai.extract_many(html, 'https://t.test/', 'key', today=date(2026, 6, 1)).events
+    assert 'start_datetime' not in first and 'start_datetime' not in second
+
+
+def test_yearless_dates_on_a_dated_post_keep_the_post_s_year(stub):
+    stub({'events': [event('Movie Night', 'July 2, 16 | 6:00 p.m.', start_datetime='2027-07-02T18:00')]})
+    head = '<meta property="article:published_time" content="2026-07-02T13:54:07+00:00">'
+    html = _page_with('July 2, 16 | 6:00 p.m. Movie Night', head)
+    [result] = ai.extract_many(html, 'https://t.test/', 'key', today=date(2026, 10, 28)).events
+    assert result['start_datetime'] == '2026-07-02T18:00'
+
+
+def test_a_page_that_names_later_years_isn_t_an_old_post(stub):
+    stub({'events': [event('Open Mic', 'Oct 29 @ 9:00 pm', start_datetime='2026-10-29T21:00')]})
+    head = '<meta property="article:published_time" content="2024-10-04T00:00:00+00:00">'
+    html = _page_with('October 2026. Oct 29 @ 9:00 pm Open Mic', head)
+    [result] = ai.extract_many(html, 'https://t.test/', 'key', today=date(2026, 10, 28)).events
+    assert result['start_datetime'] == '2026-10-29T21:00'
