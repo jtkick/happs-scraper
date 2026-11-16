@@ -78,12 +78,15 @@ def _parse_time_range(text: str) -> Optional[tuple[int, int, int, int]]:
     text = re.sub(r'\bnoon\b', '12:00 p.m.', text, flags=re.IGNORECASE)
     text = re.sub(r'\bmidnight\b', '12:00 a.m.', text, flags=re.IGNORECASE)
 
-    m = _T_BOTH.search(text)
+    both, shared = _T_BOTH.search(text), _T_SHARED.search(text)
+    if both and shared and shared.start() < both.start():
+        both = None     # the first range given is the one meant ("5-9pm … Saturday 11am-3pm")
+    m = both
     if m:
         sh, sm, sap, eh, em, eap = m.groups()
         return _to24(int(sh), sap), int(sm or 0), _to24(int(eh), eap), int(em or 0)
 
-    m = _T_SHARED.search(text)
+    m = shared
     if m:
         sh, sm, eh, em, eap = m.groups()
         sh, sm = int(sh), int(sm or 0)

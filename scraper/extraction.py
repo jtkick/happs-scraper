@@ -38,7 +38,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Callable, Optional
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -64,7 +64,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 11
+EXTRACTION_VERSION = 12
 
 
 @dataclass
@@ -361,6 +361,8 @@ def finalize(
         one_event = bool(page_text) and dates_extractor.at_most_one_day(page_text, data.get('title'))
         _fill_start(data, page_text if one_event else None, undated,
                     weekly_ok=one_event or not rec_from_page)
+        if one_event:
+            _time_for_the_day(data, page_text)
     _fit_recurrence_span(data)
 
     matched = tag_matcher.match(data.get('title', ''), data.get('description', ''), ctx=data)
@@ -616,6 +618,44 @@ def _fill_start(data: dict, page_text: Optional[str], undated: Optional[str], we
     data['start_datetime'] = found['start_datetime']
     if found.get('end_datetime') and not data.get('end_datetime'):
         data['end_datetime'] = found['end_datetime']
+
+
+def _time_for_the_day(data: dict, page_text: str) -> None:
+    """A start that's only a date takes the time the page states for that date ("February 26, 2027
+    07:00 PM"); the end too when it's a range ("5-9pm")."""
+    start = str(data.get('start_datetime') or '')
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', start):
+        return
+    found = dates_extractor.find_start(page_text, data.get('title'))
+    if not found or not found['start_datetime'].startswith(start + 'T'):
+        return
+    data['start_datetime'] = found['start_datetime']
+    if not found.get('end_datetime'):
+        found['end_datetime'] = _until_time(page_text, data.get('title'), found['start_datetime'])
+    end = str(data.get('end_datetime') or '')
+    if found.get('end_datetime') and (not end or end == start):
+        data['end_datetime'] = found['end_datetime']
+    elif end == start:
+        data['end_datetime'] = None
+
+
+def _until_time(page_text: str, title: Optional[str], start: str) -> Optional[str]:
+    """The end on the start's own line: "February 26, 2027 07:00 PM until February 26, 2027 10:00 PM"."""
+    region = dates_extractor.after_title(page_text, title)
+    begin = datetime.fromisoformat(start)
+    for day, _, at in dates_extractor.find_dates(region)[:3]:
+        if day != begin.date():
+            continue
+        line_end = region.find('\n', at)
+        line = region[at:line_end if line_end >= 0 else len(region)]
+        m = re.search(r'\b(?:until|till|to)\b|[–—]', line, re.IGNORECASE)
+        clock = dates_extractor.find_time(line[m.end():]) if m else None
+        if clock:
+            break
+    else:
+        return None
+    end = begin.replace(hour=clock[0], minute=clock[1])
+    return (end if end > begin else end + timedelta(days=1)).isoformat()
 
 
 _PERIOD_DAYS = {'daily': 1, 'weekly': 7, 'monthly': 28, 'yearly': 365}

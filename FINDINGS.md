@@ -261,12 +261,6 @@ Each item names the page it was seen on. Move an item into `PLAN.md` or fix it, 
 - Should be: whole-page text is a weak source: a schedule phrase there counts only when it's in the same block as the event's title/date (not the footer, hours or nav). In a description, "daily" as an adjective of something else ("a daily practice", "daily specials") isn't the event's schedule; a daily event also needs no explicit single date ("Thursday, October 29, 2026") on its own page
 - Where: `scraper/extractors/recurrence.py` (the `nightly|daily|every (day|night)` pattern, `_LEAD`), `scraper/extraction.py` `finalize` (`rec_from_page`)
 
-### A date-only start never gets the time the page states
-- Seen (site capture, 2026-10-28): pendletonartcenter.com/pac-events/first-friday-november-6-2026/ — JSON-LD `startDate`/`endDate` "2026-11-06" (an all-day Events Calendar entry); the page says "The Pendleton Art Center studios are open for First Friday each month from 5-9pm". The crawl sends 2026-11-06 00:00 → 00:00. sunsetplayers.org/product/house-at-pooh-corner/ — the listing partial's "2026-12-04" vs the page's "December 4 @ 7PM" (see "Listing entries that share one detail page")
-- `finalize` only looks for a time (`_fill_start`, the explicit-dates pass) when there's no start at all; a start without a time counts as complete
-- Should be: a start with no time on a single-event page takes a time stated for that date (or for the event's schedule) in its text; the end too when it's a range ("5-9pm")
-- Where: `scraper/extraction.py` `finalize` / `_fill_start` (treat a date-only start as missing its time), `dates.find_time`
-
 ### OSM's multi-valued address tags go into the address as written
 - Seen (site capture, 2026-10-28, 3 of 569 OSM venues within 10 km): `addr:housenumber=3515;3516` → "3515;3516 Edwards Road, Cincinnati, OH, 45208" (Arthur's Cafe), "5945;5959 Kellogg Avenue" (Dead Low Brewing), and "3702;2900 Drake Avenue;Wasson Road" (The Establishment, a corner building with two streets). Every event from these sources carries that address, and geocoding or map links with it fail or land oddly
 - Should be: split `;`-separated `addr:*` values and use the first housenumber with the first street (or the range "3515–3516 Edwards Road" when the street is one)

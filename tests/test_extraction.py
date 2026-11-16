@@ -499,3 +499,16 @@ def test_midnight_to_23_59_is_the_day():
     data = extraction.finalize({'title': 'Thanksgiving Buffet', 'start_datetime': '2026-11-26T00:00:00+00:00',
                                 'end_datetime': '2026-11-26T23:59:59+00:00'})
     assert (data['start_datetime'], data['end_datetime']) == ('2026-11-26', '2026-11-26')
+
+
+@pytest.mark.parametrize('text, start, end', [
+    ('Murder Mystery\nFebruary 26, 2027 07:00 PM until February 26, 2027 10:00 PM\nBecome immersed…',
+     '2027-02-26T19:00:00', '2027-02-26T22:00:00'),
+    ('First Friday\nNovember 6, 2026\nStudios are open from 5-9pm and the next day 11am-3pm.',
+     '2026-11-06T17:00:00', '2026-11-06T21:00:00'),
+])
+def test_a_date_only_start_takes_the_time_the_page_states(text, start, end):
+    title = text.split('\n')[0]
+    data = extraction.finalize({'title': title, 'start_datetime': start[:10], 'end_datetime': start[:10]},
+                               page_text=text)
+    assert (data['start_datetime'], data['end_datetime']) == (start, end)
