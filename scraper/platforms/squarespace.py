@@ -37,13 +37,13 @@ class Squarespace(Platform):
         address = ', '.join(filter(None, (loc.get('addressLine1'), loc.get('addressLine2'))))
         lat, lon = loc.get('mapLat') or loc.get('markerLat'), loc.get('mapLng') or loc.get('markerLng')
         return {
-            'title':            e.get('title'),
+            'title':            strip_tags(e.get('title')),
             'description':      strip_tags(e.get('excerpt')) or strip_tags(e.get('body')),
             'start_datetime':   _ms(e.get('startDate')),
             'end_datetime':     _ms(e.get('endDate')),
             'url':              response.urljoin(e['fullUrl']) if e.get('fullUrl') else None,
             'image_url':        e.get('assetUrl'),
-            'location_title':   loc.get('addressTitle') or None,
+            'location_title':   strip_tags(loc.get('addressTitle')),
             'location_address': address or None,
             # Squarespace's default map pin sits at its NYC office — ignore it.
             'location_lat':     lat if lat and address else None,

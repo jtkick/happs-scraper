@@ -164,3 +164,14 @@ def test_duplicate_events_across_syntaxes_are_merged():
     md = ('<div itemscope itemtype="https://schema.org/Event"><span itemprop="name">Dup</span>'
           '<meta itemprop="startDate" content="2026-06-01"></div>')
     assert len(jsonld.extract_all(ld.replace('</body>', md + '</body>'), URL)) == 1
+
+
+def test_strings_are_entity_decoded():
+    [event] = jsonld.extract_all(_page('''{"@type": "Event", "name": "Park &#038; Tree Board",
+      "description": "&lt;p&gt;Park &amp; Tree Board meeting&lt;/p&gt;\\n", "startDate": "2026-06-08T18:00:00",
+      "location": {"@type": "Place", "name": "Redtree Coffee &amp; Art"},
+      "offers": {"url": "https://tix.test/b?rid=1&amp;exp=2"}}'''), URL)
+    assert event['title'] == 'Park & Tree Board'
+    assert event['description'] == 'Park & Tree Board meeting'
+    assert event['location_title'] == 'Redtree Coffee & Art'
+    assert event['ticket_url'] == 'https://tix.test/b?rid=1&exp=2'

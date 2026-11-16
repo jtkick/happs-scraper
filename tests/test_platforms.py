@@ -49,7 +49,7 @@ def test_tribe_parse_and_pagination():
         'url': 'https://venue.test/event/jazz/', 'start_date': '2026-06-05 19:00:00',
         'utc_start_date': '2026-06-05 23:00:00', 'utc_end_date': '2026-06-06 02:00:00',
         'timezone': 'America/New_York', 'image': {'url': 'https://venue.test/j.jpg'},
-        'cost_details': {'values': ['15']},
+        'cost_details': {'values': ['15']}, 'website': 'https://tix.test/b?rid=1&amp;exp=2',
         'venue': {'venue': 'Main Hall', 'address': '1 Main St', 'city': 'Cincinnati',
                   'state': 'OH', 'zip': '45202', 'geo_lat': '39.1', 'geo_lng': '-84.5'},
     }], 'next_rest_url': 'https://venue.test/wp-json/tribe/events/v1/events?page=2'})
@@ -59,6 +59,7 @@ def test_tribe_parse_and_pagination():
     assert event['start_datetime'] == '2026-06-05T23:00:00+00:00'
     assert event['location_address'] == '1 Main St, Cincinnati, OH, 45202'
     assert event['location_lat'] == 39.1 and event['ticket_price'] == '15'
+    assert event['ticket_url'] == 'https://tix.test/b?rid=1&exp=2'
     assert WordPressTribe().next_url(resp).endswith('page=2')
 
 
@@ -76,7 +77,7 @@ def test_squarespace_only_matches_events_collections():
 def test_squarespace_parse():
     start = int(datetime(2026, 6, 5, 23, tzinfo=timezone.utc).timestamp() * 1000)
     resp = feed({'upcoming': [{
-        'title': 'Open Mic', 'fullUrl': '/events/open-mic', 'startDate': start + 564,
+        'title': 'Open Mic &amp; Friends', 'fullUrl': '/events/open-mic', 'startDate': start + 564,
         'excerpt': '<p>Bring a guitar</p>', 'assetUrl': 'https://img/x.jpg',
         'location': {'addressTitle': 'Back Room', 'addressLine1': '1 Main St',
                      'addressLine2': 'Cincinnati, OH', 'mapLat': 39.1, 'mapLng': -84.5},
@@ -84,6 +85,7 @@ def test_squarespace_parse():
         url='https://venue.test/events?format=json')
     first, second = Squarespace().parse(resp)
     assert first['start_datetime'] == '2026-06-05T23:00:00+00:00'
+    assert first['title'] == 'Open Mic & Friends'
     assert first['url'] == 'https://venue.test/events/open-mic'
     assert first['description'] == 'Bring a guitar'
     assert second['location_lat'] is None          # Squarespace's default pin

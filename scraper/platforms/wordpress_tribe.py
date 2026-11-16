@@ -1,6 +1,7 @@
 """WordPress + The Events Calendar (Tribe) — public REST API with every upcoming event."""
 from __future__ import annotations
 import json
+from html import unescape
 from typing import Optional
 
 from scraper.util import strip_tags
@@ -44,10 +45,10 @@ class WordPressTribe(Platform):
             # UTC fields avoid depending on the site's configured zone.
             'start_datetime':   _utc(e.get('utc_start_date')) or e.get('start_date'),
             'end_datetime':     _utc(e.get('utc_end_date')) or e.get('end_date'),
-            'url':              e.get('url'),
+            'url':              unescape(e['url']) if e.get('url') else None,
             'image_url':        image.get('url'),
             'ticket_price':     values[0] if values else (e.get('cost') or None),
-            'ticket_url':       e.get('website') or None,
+            'ticket_url':       unescape(e['website']) if e.get('website') else None,
             'location_title':   strip_tags(venue.get('venue')),
             'location_address': address or None,
             'location_lat':     _float(venue.get('geo_lat')),

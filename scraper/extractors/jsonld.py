@@ -7,9 +7,12 @@ extractor runs first and costs nothing.
 
 from __future__ import annotations
 import logging
+from html import unescape
 from typing import Optional
 
 import extruct
+
+from scraper.util import strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +87,19 @@ def _find_event(node: dict) -> Optional[dict]:
 
 
 def _text(value) -> Optional[str]:
-    """Normalise a JSON-LD value that might be a string or {'@value': ...}."""
-    if isinstance(value, str):
-        return value.strip() or None
+    """Normalise a JSON-LD value that might be a string or {'@value': ...}. Text in a <script> isn't
+    entity-decoded by the HTML parser, and CMSs HTML-escape their strings before writing JSON-LD."""
     if isinstance(value, dict):
-        return str(value.get('@value', '')).strip() or None
-    return None
+        value = str(value.get('@value', ''))
+    if not isinstance(value, str):
+        return None
+    return unescape(value).strip() or None
+
+
+def _description(value) -> Optional[str]:
+    """The description as text: unescaping can reveal markup (&lt;p&gt;)."""
+    text = _text(value)
+    return strip_tags(text) if text and '<' in text else text
 
 
 def _location_node(node: dict) -> dict:
@@ -157,7 +167,7 @@ def _parse(node: dict) -> dict:
     lat, lon = _geo(node)
     return {
         'title':            _text(node.get('name')),
-        'description':      _text(node.get('description')),
+        'description':      _description(node.get('description')),
         'start_datetime':   _text(node.get('startDate')),
         'end_datetime':     _text(node.get('endDate')),
         'location_title':   loc_title,
