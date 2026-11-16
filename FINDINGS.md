@@ -281,22 +281,11 @@ Each item names the page it was seen on. Move an item into `PLAN.md` or fix it, 
 - Should be: when the homepage itself has several dated entries (`dates.find_dates` on its text, or repeated blocks with dates), parse it as a listing alongside whatever discovery picks, and keep whichever yields events in the recipe. A page found by discovery that comes back with no events shouldn't end the run while the homepage has dates
 - Where: `scraper/spiders/generic.py` `parse_home` / `_discovered`; `scraper/discovery/events_page.py`
 
-### Squarespace: event times keep the feed's stray milliseconds
-- Seen (site capture, 2026-10-28): northernrow.com/taproom-calendar?format=json — `startDate` 1793462400564 (16:00:00.564 UTC); `squarespace._ms` keeps the fraction, so the listing sends "2026-10-31T16:00:00.564000+00:00" while the event's own page (JSON-LD) says 16:00:00. Also smokejustis.com, bangbangtiki.com, deeperrootscoffee.com (10 events)
-- Harmless where things match by day (the backend's cross-source match), but anything comparing exact datetimes (rdates/exdates, listing vs detail, change detection between runs if the fraction changes) sees two different times
-- Should be: truncate to whole seconds (whole minutes would also be safe for events)
-- Where: `scraper/platforms/squarespace.py` `_ms`
-
 ### Listing entries that share one detail page: all but the first are lost
 - Seen (site capture, 2026-10-28): sunsetplayers.org/product-category/current-season/ (WooCommerce). The model returns each performance as its own event ("House at Pooh Corner" Dec 4, 5, 6, 11, 12, 13 from "December 4, 5, 6, 11, 12, and 13"; 18 for three shows), all with the show's one product URL. Each is `soft` (`follow.detail_reason`: no end), so `_emit_listing_events` yields a detail request per entry with that entry as the partial and `continue`s past `build_item`. The six requests are the same URL and `_request` doesn't set `dont_filter`, so Scrapy's dupefilter drops five without a callback or errback: the crawl sends Dec 4 only, 3 events where there are 18. Each dropped request still counts in `run.scheduled_details`, using up the detail budget. Across the capture: 23 entries (sunsetplayers.org 15, esquiretheatre.com 4, cincinnatiarts.org 4; platform feeds excluded)
 - And the one that survives loses its time: the product page lists "December 4 @ 7PM … December 12 @ 2PM", but the partial's date-only start (Dec 4 00:00) means the model isn't asked and the explicit-dates pass doesn't replace it
 - Should be: group the listing's entries by detail URL and follow each page once, carrying all its entries; on the page, match each entry to its own date there (taking the page's times) and emit the entries the page doesn't mention from the listing. A partial start with no time shouldn't block a time the page gives for that same day
 - Where: `scraper/spiders/generic.py` `_emit_listing_events` / `parse_event`, `scraper/extraction.py` `finalize` (partial vs page)
-
-### Placeholder titles ("TBA") go out as events
-- Seen (site capture, 2026-10-28): thepoint.club's public Google Calendar (`…/schwartzspoint%40gmail.com/public/basic.ics`) holds the club's open slots as recurring "TBA" series with no `UNTIL` (weekly Fridays, Saturdays, Sundays; monthly 2nd/3rd Thursdays, started 2019–2025). The `ical` adapter keeps them (ended series with `UNTIL` are dropped correctly), so the feed would show "TBA" at Schwartz's Point several nights a week, beside the real entries ("Coltrane 100th Anniversary X-Mas Eve Party…")
-- Should be: a title that is only a placeholder ("TBA", "TBD", "To be announced", "Private", "Hold", "Closed") isn't an event; a dated "TBA" with a description could be kept as "Live music (TBA)", but bare ones drop
-- Where: `scraper/pipelines.py` `_NON_EVENT_TITLE` (or a `placeholder_title` check in `ValidatePipeline`)
 
 ### "Every night" / "daily" anywhere in the text makes an event repeat daily
 - Seen (site capture, 2026-10-28):

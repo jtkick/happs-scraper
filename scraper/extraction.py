@@ -61,7 +61,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 3
+EXTRACTION_VERSION = 4
 
 
 @dataclass

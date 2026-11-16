@@ -387,6 +387,9 @@ def test_review_threshold_is_configurable():
     ({'title': 'Opening Hours'},                             'not_an_event'),
     ({'title': 'Gift Cards'},                                'not_an_event'),
     ({'title': 'Private Events'},                            'not_an_event'),
+    ({'title': 'TBA'},                                       'placeholder_title'),
+    ({'title': 'To Be Announced!'},                          'placeholder_title'),
+    ({'title': '- Private -'},                               'placeholder_title'),
     ({'title': 'The Rusty Tap', 'location_title': 'The Rusty Tap'}, 'title_is_venue'),
     ({'title': 'ab'},                                        'bad_title_length'),
     ({'start_datetime': _future(-3)},                        'past_event'),
@@ -395,6 +398,11 @@ def test_review_threshold_is_configurable():
 def test_drops_record_a_reason(validate, fields, reason):
     with pytest.raises(DropItem, match=f'^{reason}:'):
         validate.process_item(_valid(**fields), None)
+
+
+@pytest.mark.parametrize('title', ['TBA Showcase', 'Live Music (TBA)', 'Private Eye Trivia', 'Booked Solid'])
+def test_titles_that_only_contain_a_placeholder_are_kept(validate, title):
+    validate.process_item(_valid(title=title), None)
 
 
 def test_ongoing_multi_day_event_is_not_past(validate):

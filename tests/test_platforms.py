@@ -76,7 +76,7 @@ def test_squarespace_only_matches_events_collections():
 def test_squarespace_parse():
     start = int(datetime(2026, 6, 5, 23, tzinfo=timezone.utc).timestamp() * 1000)
     resp = feed({'upcoming': [{
-        'title': 'Open Mic', 'fullUrl': '/events/open-mic', 'startDate': start,
+        'title': 'Open Mic', 'fullUrl': '/events/open-mic', 'startDate': start + 564,
         'excerpt': '<p>Bring a guitar</p>', 'assetUrl': 'https://img/x.jpg',
         'location': {'addressTitle': 'Back Room', 'addressLine1': '1 Main St',
                      'addressLine2': 'Cincinnati, OH', 'mapLat': 39.1, 'mapLng': -84.5},

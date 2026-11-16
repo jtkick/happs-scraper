@@ -160,6 +160,12 @@ _NON_EVENT_TITLE = re.compile(
     r'^(?:closed|we are closed|temporarily closed)\b|\bcareers?\b|\bjobs?\b',
     re.IGNORECASE,
 )
+# A slot held open on a calendar, not an event: the whole title is the placeholder.
+_PLACEHOLDER_TITLE = re.compile(
+    r'^\W*(?:tba|tbd|tbc|to be (?:announced|determined|confirmed)|private(?: event| party| booking)?|'
+    r'hold|on hold|reserved|booked|closed|open date|available)\W*$',
+    re.IGNORECASE,
+)
 
 _METHOD_CONFIDENCE = {
     'ical': 0.95, 'jsonld': 0.9, 'inline_json': 0.8, 'recipe': 0.75,
@@ -192,6 +198,8 @@ class ValidatePipeline:
         title = item.get('title') or ''
         if not 3 <= len(title) <= 200:
             raise DropItem(f"bad_title_length: {title[:60]}")
+        if _PLACEHOLDER_TITLE.match(title):
+            raise DropItem(f"placeholder_title: {title}")
         if _NON_EVENT_TITLE.search(title):
             raise DropItem(f"not_an_event: {title}")
         venue = item.get('location_title')

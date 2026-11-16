@@ -54,7 +54,8 @@ class Squarespace(Platform):
 def _ms(value) -> Optional[str]:
     if not isinstance(value, (int, float)):
         return None
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+    # The feed's stray milliseconds would make the listing's time differ from the event page's.
+    return datetime.fromtimestamp(int(value) // 1000, tz=timezone.utc).isoformat()
 
 
 

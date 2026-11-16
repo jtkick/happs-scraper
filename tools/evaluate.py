@@ -3,10 +3,11 @@
 Score the scraper on the reviewed cases in tests/fixtures/.
 
 Usage:
-    python tools/evaluate.py [--inbox] [--ai replay|live|none] [--model ID]
+    python tools/evaluate.py [--inbox | --dir DIR] [--ai replay|live|none] [--model ID]
                              [--json OUT] [--baseline FILE]
 
     --inbox           Score review/inbox/ instead (unreviewed: labels are the scraper's own guesses)
+    --dir DIR         Score the case folders in DIR, e.g. a suite pulled with eval_sync.py
     --ai live         Ask the model afresh (compare prompts or models; costs credits)
     --model ID        Model for --ai live (default: the crawler's)
     --json OUT        Save the scorecard, e.g. as a baseline for later runs
@@ -32,7 +33,9 @@ def _pct(value) -> str:
 def main():
     parser = argparse.ArgumentParser(description='Score the scraper on reviewed cases',
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--inbox', action='store_true')
+    where = parser.add_mutually_exclusive_group()
+    where.add_argument('--inbox', action='store_true')
+    where.add_argument('--dir', type=Path)
     parser.add_argument('--ai', choices=('replay', 'live', 'none'), default='replay')
     parser.add_argument('--model')
     parser.add_argument('--json', metavar='OUT')
@@ -42,7 +45,7 @@ def main():
     if args.ai == 'live':
         from dotenv import load_dotenv
         load_dotenv(Path(__file__).parent.parent / '.env')
-    cases = load_all(INBOX_DIR if args.inbox else FIXTURES_DIR)
+    cases = load_all(args.dir or (INBOX_DIR if args.inbox else FIXTURES_DIR))
     if not cases:
         sys.exit('No cases to score. Capture some with tools/review.py.')
     card = scorecard(cases, ai=None if args.ai == 'none' else args.ai,
