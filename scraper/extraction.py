@@ -64,7 +64,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 10
+EXTRACTION_VERSION = 11
 
 
 @dataclass
@@ -290,6 +290,7 @@ def finalize(
     listing page that came out as one event, which is the page, not an event.
     """
     data = dict(data)
+    _all_day_as_dates(data)
     if partial and page_text:
         _listing_day_if_page_agrees(data, partial, page_text)
     if (partial and partial.get('title') and data.get('extraction_method') == 'opengraph'
@@ -365,6 +366,17 @@ def finalize(
     matched = tag_matcher.match(data.get('title', ''), data.get('description', ''), ctx=data)
     data['tag_names'] = list(dict.fromkeys((data.get('tag_names') or []) + matched))
     return data
+
+
+_ALL_DAY = re.compile(r'^(\d{4}-\d{2}-\d{2})T(?:00:00(?::00)?|23:59(?::59)?)(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$')
+
+
+def _all_day_as_dates(data: dict) -> None:
+    """Midnight to 23:59 on one day is the day itself, not times (an all-day entry, often written in UTC)."""
+    start, end = (_ALL_DAY.match(str(data.get(k) or '')) for k in ('start_datetime', 'end_datetime'))
+    if start and end and start.group(1) == end.group(1) and str(data['start_datetime'])[11:13] == '00' \
+            and str(data['end_datetime'])[11:13] == '23':
+        data['start_datetime'] = data['end_datetime'] = start.group(1)
 
 
 def _listing_day_if_page_agrees(data: dict, partial: dict, page_text: str) -> None:

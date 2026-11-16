@@ -43,12 +43,16 @@ class WordPressTribe(Platform):
         # A WordPress manual offset ("UTC-4") has no clock changes, so its UTC fields are an hour off half
         # the year: then the local fields are read in the venue's zone instead.
         fixed = bool(_FIXED_OFFSET.match(e.get('timezone') or ''))
+        # An all-day event's times are midnight to 23:59:59, often in UTC: it's the day, not a time.
+        day = e.get('all_day') is True
         return {
             'title':            strip_tags(e.get('title')),
             'description':      strip_tags(e.get('description')),
             # UTC fields avoid depending on the site's configured zone.
-            'start_datetime':   (not fixed and _utc(e.get('utc_start_date'))) or _local(e.get('start_date')),
-            'end_datetime':     (not fixed and _utc(e.get('utc_end_date'))) or _local(e.get('end_date')),
+            'start_datetime':   _day(e.get('start_date')) if day else
+                                (not fixed and _utc(e.get('utc_start_date'))) or _local(e.get('start_date')),
+            'end_datetime':     _day(e.get('end_date')) if day else
+                                (not fixed and _utc(e.get('utc_end_date'))) or _local(e.get('end_date')),
             'url':              unescape(e['url']) if e.get('url') else None,
             'image_url':        image.get('url'),
             'ticket_price':     values[0] if values else (e.get('cost') or None),
@@ -62,6 +66,10 @@ class WordPressTribe(Platform):
 
 
 _FIXED_OFFSET = re.compile(r'^UTC(?:[+-]\d{1,2}(?::?\d{2})?)?$')
+
+
+def _day(value) -> Optional[str]:
+    return value[:10] if value else None
 
 
 def _local(value) -> Optional[str]:

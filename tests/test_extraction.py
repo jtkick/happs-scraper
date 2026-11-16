@@ -493,3 +493,9 @@ def test_a_page_s_ticket_link_replaces_a_listing_link_back_into_the_site():
                'ticket_url': 'https://venue.test/shows'}
     _, [event] = extraction.parse_page(page, kind='detail', partial=partial)
     assert event['ticket_url'] == 'https://www.eventbrite.com/e/mockball-tickets-1'
+
+
+def test_midnight_to_23_59_is_the_day():
+    data = extraction.finalize({'title': 'Thanksgiving Buffet', 'start_datetime': '2026-11-26T00:00:00+00:00',
+                                'end_datetime': '2026-11-26T23:59:59+00:00'})
+    assert (data['start_datetime'], data['end_datetime']) == ('2026-11-26', '2026-11-26')

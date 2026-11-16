@@ -74,6 +74,15 @@ def test_tribe_on_a_fixed_utc_offset_reads_local_times():
     assert event['timezone'] is None
 
 
+def test_tribe_all_day_events_are_dates():
+    resp = feed({'events': [{
+        'title': 'Thanksgiving Buffet', 'all_day': True, 'start_date': '2026-11-26 00:00:00',
+        'end_date': '2026-11-26 23:59:59', 'utc_start_date': '2026-11-26 00:00:00',
+        'utc_end_date': '2026-11-26 23:59:59', 'timezone': 'UTC'}]})
+    [event] = WordPressTribe().parse(resp)
+    assert (event['start_datetime'], event['end_datetime']) == ('2026-11-26', '2026-11-26')
+
+
 def test_squarespace_only_matches_events_collections():
     home = html('<script src="https://static1.squarespace.com/x.js"></script><p>Welcome</p>')
     events = html('<script src="https://static1.squarespace.com/x.js"></script>'
