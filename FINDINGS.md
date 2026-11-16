@@ -23,17 +23,6 @@ Each item names the page it was seen on. Move an item into `PLAN.md` or fix it, 
   - Only for listings that clearly list every occurrence (e.g. ≥3 consecutive ones present), or the far end of a short calendar would read as cancellations
 - Where: `scraper/pipelines.py` `FingerprintDedupPipeline` drops them before anything can merge them; the merge belongs earlier, per page (`extraction.finalize_page` or the platform/listing path), before items are built
 
-### A series' dated sessions each become their own endless series
-- Seen (site capture, 2026-10-28): contemporaryartscenter.org/experience/calendar lists each week's session with its own theme and date ("01 October 2026 Thursday 4:00 p.m. - 6:00 p.m. Young Adult Lab: Paper Portraits / Join us every Thursday in the CAC Creativity Center for Young Adult Lab…"; Oct 8 "Glow Face Paint", Oct 15 "Costume Shop", Oct 22 "Blackout Poetry…", Oct 29 "Zombie Dolls"). Each entry's blurb has "every Thursday", so each is `weekly TH` from its own date: five overlapping endless series with different titles, every Thursday from Oct 29 on showing five Young Adult Labs, and the past October sessions kept alive (the pipeline sees a weekly series, not a past one-off). "Cardboard Architects" (same title every Sunday) gets the same rule, then loses its repeats to `duplicate_in_run` (see above). Also pendletonartcenter.com/pac-events (The Events Calendar): "First Friday November 6, 2026" and "First Friday December 4, 2026" are each `monthly 1FR` (the title says "First Friday"), two series whose titles differ, so both survive dedup and every first Friday from December has two
-- Should be: an entry with its own explicit date on a listing that lists the series' other dates too is one occurrence; "every Thursday" describes the programme, not this entry. Group them as one series (title prefix before ":" or the shared blurb) with each themed date as an occurrence, or keep them as one-offs. Never let a recurrence rule revive an entry whose own date is past when the listing shows later sessions separately
-- Where: `scraper/extraction.py` `finalize` (recurrence on listing entries), with the series merge described above
-
-### "Monthly" with no day makes a one-off recur
-- Seen: mellotonebeer.com/calendar — Night Noodles, "back for their monthly musical installment", one date listed → `monthly`, no `byday`, so it repeats on the 4th of every month
-- Also (site capture, 2026-10-28): deadlowbrewing.com/event/murder-mystery-dinner-theater-show-* — eight dated shows (Jan 8, Jan 22, Feb 12…), each page's description says "Themes change monthly" / "Each month brings a new adventure". Every show is `monthly` with no `byday`, so each repeats on its own day number every month (eight overlapping series)
-- Should be: one-off. A bare "monthly" doesn't say which day; a wrong series is worse than a missing one
-- Where: `scraper/extractors/recurrence.py`, the `(?:monthly|every\s+month)` pattern — require a day (ordinal + weekday, or a day of the month), or a second listed date that fits
-
 ### A pub's venue tags put "Happy Hour" on every event
 - Seen: mellotonebeer.com (OSM `pub`) — trivia, comedy, music and dance nights all tagged `21+` and `Happy Hour`
 - Scale (site capture, 2026-10-28): `Happy Hour` is on 353 of 572 kept events, every event of all 13 bar/pub sources (revelotr.com 63/63, tinroofcincinnati.com 62/62, …), more than any real tag (`Music` 131)

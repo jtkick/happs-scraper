@@ -262,8 +262,10 @@ _PATTERNS: list[tuple[re.Pattern, object, callable]] = [
                 {'interval': _number(m.group(1))})),
     (re.compile(r'\b(' + _LEAD + r')?weekly\b'), lambda m: bool(m.group(1)),
      lambda m: ('weekly', {})),
+    # A bare "monthly" doesn't say which day ("themes change monthly"): repeating on the start's day
+    # number would be a guess, and a wrong series is worse than a missing one.
     (re.compile(r'\b(' + _LEAD + r')?(?:monthly|every\s+month)\b'), lambda m: bool(m.group(1)),
-     lambda m: ('monthly', {})),
+     lambda m: None),
     (re.compile(r'\b(' + _LEAD + r')?(?:yearly|annually|every\s+year)\b'), lambda m: bool(m.group(1)),
      lambda m: ('yearly', {})),
 ]

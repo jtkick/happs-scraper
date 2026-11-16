@@ -44,7 +44,8 @@ from zoneinfo import ZoneInfo
 
 from scraper import text as text_module
 from scraper.discovery import event_links, links as link_classifier
-from scraper.util import parse_iso
+from scraper.items import RECURRENCE_DEFAULTS
+from scraper.util import fold, parse_iso
 from scraper.extractors import (
     recipe as recipe_extractor,
     jsonld,
@@ -62,7 +63,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 8
+EXTRACTION_VERSION = 9
 
 
 @dataclass
@@ -306,10 +307,16 @@ def finalize(
         jsonld_node=jsonld_node,
         schedule_text=data.get('_schedule_text'),
     )
-    rec = recurrence_extractor.extract(**own_text)
-    rec_from_page = not rec and bool(full_text)
-    if rec_from_page:
-        rec = recurrence_extractor.extract(**own_text, page_text=full_text)
+    if _session_title(data.get('title')) and not (jsonld_node and recurrence_extractor.extract('', '', jsonld_node)):
+        # One dated session of a series: the series' schedule isn't this event's.
+        rec, rec_from_page = None, False
+        for key in RECURRENCE_DEFAULTS:
+            data.pop(key, None)
+    else:
+        rec = recurrence_extractor.extract(**own_text)
+        rec_from_page = not rec and bool(full_text)
+        if rec_from_page:
+            rec = recurrence_extractor.extract(**own_text, page_text=full_text)
     for key, value in (rec or {}).items():
         if not data.get(key):
             data[key] = value
@@ -358,6 +365,54 @@ def _listing_day_if_page_agrees(data: dict, partial: dict, page_text: str) -> No
     days = {day for day, _, _ in dates_extractor.find_dates(dates_extractor.after_title(page_text, data.get('title')))}
     if days == {listed.date()}:
         data['start_datetime'], data['end_datetime'] = partial['start_datetime'], partial.get('end_datetime')
+
+
+_RECURRING_WORD = re.compile(r'\b(?:every|each|weekly|monthly|daily|nightly|through|thru|until|starting)\b', re.I)
+
+
+def _session_title(title: Optional[str]) -> bool:
+    """A title that names one session of a series: its own date ("First Friday November 6, 2026"), or a
+    series named for its schedule with this session's name after it ("2nd Sunday Showtime: COMER")."""
+    if not title or _RECURRING_WORD.search(title):
+        return False
+    if dates_extractor.find_date(title):
+        return True
+    series, _, session = title.partition(':')
+    return bool(session.strip()) and bool(recurrence_extractor.extract(series, '')) \
+        and not recurrence_extractor.extract(session, '')
+
+
+def _series_name(title: str) -> str:
+    """What a series' sessions' titles share: the part before ":", or the title without its date."""
+    series, sep, _ = title.partition(':')
+    if sep:
+        return fold(series)
+    found = dates_extractor.find_dates(title)
+    for _, at, end in reversed(found):
+        title = title[:at] + title[end:]
+    return fold(re.sub(r'[\s,|–-]+$', '', title))
+
+
+def _dated_sessions(events: list[dict]) -> None:
+    """
+    A listing that lists a series' sessions on their own dates ("Young Adult Lab: Paper Portraits", Oct 1;
+    "…: Glow Face Paint", Oct 8, each blurb saying "every Thursday") shows occurrences, not one endless
+    series per entry: each is a one-off. Entries of one series share a name and a rule.
+    """
+    groups: dict[tuple, set] = {}
+    for e in events:
+        if e.get('recurrence_freq') in (None, 'none') or not parse_iso(e.get('start_datetime')):
+            continue
+        key = (_series_name(e.get('title') or ''), e['recurrence_freq'], tuple(sorted(e.get('recurrence_byday') or [])))
+        groups.setdefault(key, set()).add(parse_iso(e['start_datetime']).date())
+    sessions = {key for key, days in groups.items() if len(days) >= 2}
+    for e in events:
+        if e.get('recurrence_freq') in (None, 'none') or not parse_iso(e.get('start_datetime')):
+            continue
+        key = (_series_name(e.get('title') or ''), e['recurrence_freq'], tuple(sorted(e.get('recurrence_byday') or [])))
+        if key in sessions:
+            e.update(RECURRENCE_DEFAULTS)
+            e['recurrence_byday'] = []
 
 
 NOT_FOUND_TITLE = re.compile(r'^\W*(?:page not found|not found|(?:error )?404\b|nothing found|page unavailable)',
@@ -443,6 +498,8 @@ def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = No
             logger.debug("Extracted event without a title — skipping")
             continue
         events.append(final)
+    if not result.single:
+        _dated_sessions(events)
     if not result.events and partial:
         final = finalize(partial, context=context)
         if final:

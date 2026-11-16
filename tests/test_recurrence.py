@@ -25,7 +25,6 @@ def _text(description: str, title: str = 'Event') -> dict:
     ('Every 3 weeks on Sunday',      'weekly',  ['SU'],                         3),
     ('Every three weeks on Sunday',  'weekly',  ['SU'],                         3),
     ('A weekly showcase',            'weekly',  [],                             1),
-    ('Held monthly',                 'monthly', [],                             1),
     ('Held annually',                'yearly',  [],                             1),
     ('Every year in June',           'yearly',  [],                             1),
 ])
@@ -34,6 +33,11 @@ def test_text_patterns(description, freq, byday, interval):
     assert result['recurrence_freq'] == freq
     assert sorted(result['recurrence_byday']) == sorted(byday)
     assert result['recurrence_interval'] == interval
+
+
+@pytest.mark.parametrize('description', ['Held monthly', 'Themes change monthly!', 'A new adventure every month'])
+def test_a_monthly_with_no_day_is_no_rule(description):
+    assert _text(description) is None
 
 
 def test_numeric_ordinal_weekday_of_month():

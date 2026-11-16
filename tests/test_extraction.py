@@ -431,3 +431,34 @@ def test_structured_data_on_another_day_than_the_page_and_listing_loses():
          'end_datetime': '2026-10-31T00:00:00-04:00', 'extraction_method': 'jsonld'},
         partial={'title': 'Fright Night Kickoff', 'start_datetime': '2026-10-31T12:00:00-04:00'}, page_text=text)
     assert data['start_datetime'] == '2026-10-31T12:00:00-04:00' and not data.get('end_datetime')
+
+
+# ── Sessions of a series ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('title, session', [
+    ('First Friday November 6, 2026', True),
+    ('2nd Sunday Showtime: COMER, RONSTADT & FEIST', True),
+    ('Second Sunday Workshops: Gratitude Trees', True),
+    ('First Friday Art Walk', False),
+    ('Trivia: Every Tuesday', False),
+    ('Young Adult Lab: Paper Portraits', False),
+    ('Every Friday through Dec 18', False),
+])
+def test_session_titles(title, session):
+    assert extraction._session_title(title) is session
+
+
+def test_a_dated_session_doesn_t_take_the_series_schedule():
+    data = extraction.finalize({'title': 'First Friday November 6, 2026', 'start_datetime': '2026-11-06T17:00:00',
+                                'description': 'Studios are open the first Friday of every month.'})
+    assert data.get('recurrence_freq') in (None, 'none')
+
+
+def test_a_listing_s_dated_sessions_of_one_series_are_one_offs():
+    blurb = 'Join us every Thursday for Young Adult Lab.'
+    result = extraction.PageResult(single=False, events=[
+        ({'title': f'Young Adult Lab: {theme}', 'start_datetime': day, 'description': blurb}, None)
+        for theme, day in (('Paper Portraits', '2026-10-01T16:00:00'), ('Glow Face Paint', '2026-10-08T16:00:00'))
+    ] + [({'title': 'Trivia', 'start_datetime': '2026-10-06T20:00:00', 'description': 'Every Tuesday.'}, None)])
+    events = extraction.finalize_page(result, '<html></html>')
+    assert [e['recurrence_freq'] for e in events] == ['none', 'none', 'weekly']
