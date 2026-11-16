@@ -38,8 +38,9 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 from scraper import text as text_module
 from scraper.discovery import event_links, links as link_classifier
@@ -61,7 +62,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 5
+EXTRACTION_VERSION = 6
 
 
 @dataclass
@@ -299,7 +300,8 @@ def finalize(
     # Explicit dates: page-wide text only describes this event on a
     # single-event page; on listings it would smear one event's dates
     # onto all of them.
-    for text_src in filter(None, [page_text, data.get('_schedule_text'), data.get('description')]):
+    for text_src in filter(None, [page_text and _without_pager(page_text), data.get('_schedule_text'),
+                                  data.get('description')]):
         date_info = dates_extractor.extract(text_src)
         if not date_info:
             continue
@@ -307,9 +309,10 @@ def finalize(
             data['start_datetime'] = date_info['start_datetime']
         if date_info.get('end_datetime') and not data.get('end_datetime'):
             data['end_datetime'] = date_info['end_datetime']
-        if date_info.get('rdates'):
+        rdates = _other_days(data, date_info.get('rdates') or [])
+        if rdates:
             existing = data.get('rdates') or []
-            data['rdates'] = list(dict.fromkeys(existing + date_info['rdates']))
+            data['rdates'] = list(dict.fromkeys(existing + rdates))
         if date_info.get('exdates'):
             data.setdefault('exdates', [])
             seen = {e['datetime'] for e in data['exdates']}
@@ -327,6 +330,60 @@ def finalize(
     matched = tag_matcher.match(data.get('title', ''), data.get('description', ''), ctx=data)
     data['tag_names'] = list(dict.fromkeys((data.get('tag_names') or []) + matched))
     return data
+
+
+_PAGER_WORD = re.compile(r'^\W*(?:previous|prev|next|older|newer)(?: (?:event|post))?\W*$', re.IGNORECASE)
+
+
+def _without_pager(text: str) -> str:
+    """The page text without a post pager ("Previous / March 7 / Kaleidoscope / Next / June 13 / …",
+    Squarespace's .item-pagination): those are the neighbouring events' dates and titles."""
+    lines = text.split('\n')
+    out, i = [], 0
+    while i < len(lines):
+        if _PAGER_WORD.match(lines[i]):
+            j = i
+            while j < len(lines) and (_PAGER_WORD.match(lines[j]) or not lines[j].strip()):
+                j += 1
+            if j < len(lines) and len(lines[j]) <= 40 and dates_extractor.find_date(lines[j]):
+                i = j + 2
+                continue
+        out.append(lines[i])
+        i += 1
+    return '\n'.join(out)
+
+
+def _local(value, tz: Optional[str]) -> Optional[datetime]:
+    moment = parse_iso(value)
+    if moment and moment.tzinfo and tz:
+        try:
+            return moment.astimezone(ZoneInfo(tz))
+        except (KeyError, ValueError):
+            pass
+    return moment
+
+
+def _other_days(data: dict, rdates: list[str]) -> list[str]:
+    """Explicit dates that are further occurrences: not a day within the event's own run (an overnight
+    end, a themed night of a play's run). One read without a time takes the event's start time."""
+    tz = data.get('timezone')
+    start = _local(data.get('start_datetime'), tz)
+    if not start:
+        return rdates
+    end = _local(data.get('end_datetime'), tz)
+    last = max(start.date(), end.date()) if end else start.date()
+    kept = []
+    for value in rdates:
+        day = parse_iso(value)
+        if day is None:
+            kept.append(value)
+            continue
+        if start.date() <= day.date() <= last:
+            continue
+        if day.time() == time(0) and start.time() != time(0):
+            value = day.replace(hour=start.hour, minute=start.minute, second=start.second).isoformat()
+        kept.append(value)
+    return kept
 
 
 def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = None,

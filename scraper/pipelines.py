@@ -50,6 +50,15 @@ class NormalizePipeline:
     def from_crawler(cls, crawler):
         return cls(crawler.settings)
 
+    @staticmethod
+    def _end_after(start: str, end: Optional[str]) -> Optional[str]:
+        """An end before the start within a day is an overnight end written on the start's date
+        (JSON-LD "21:00" → "01:00" the same day): it's the next day. Further before, it's wrong."""
+        s, e = parse_utc(start), parse_utc(end)
+        if not s or not e or e >= s:
+            return end
+        return (e + timedelta(days=1)).isoformat() if s - e < timedelta(days=1) else None
+
     def process_item(self, item, spider=None):
         # Validate required fields before anything else.
         raw_title = self._clean(item.get('title'))
@@ -69,7 +78,7 @@ class NormalizePipeline:
         # Normalize all other fields first so cross-field cleaners (e.g.
         # venue-suffix stripper) see clean values when they run on the title.
         item['description']      = self._clean(item.get('description'))
-        item['end_datetime']     = self._parse_date(item.get('end_datetime'), tz)
+        item['end_datetime']     = self._end_after(start, self._parse_date(item.get('end_datetime'), tz))
         item['location_title']   = self._clean(item.get('location_title'))
         item['location_address'] = self._clean(item.get('location_address'))
         item['url']              = self._clean(item.get('url'))

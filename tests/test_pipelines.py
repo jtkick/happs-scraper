@@ -112,6 +112,18 @@ def test_naive_datetime_object_gets_venue_timezone(normalize):
     assert result['start_datetime'] == '2026-06-05T19:00:00-05:00'
 
 
+def test_an_overnight_end_on_the_start_date_moves_to_the_next_day(normalize):
+    result = normalize.process_item(_item(start_datetime='2026-11-14T21:00:00', end_datetime='2026-11-14T01:00:00',
+                                          timezone='America/New_York'), None)
+    assert result['end_datetime'] == '2026-11-15T06:00:00+00:00'
+
+
+def test_an_end_days_before_the_start_is_dropped(normalize):
+    result = normalize.process_item(_item(start_datetime='2026-11-14T21:00:00', end_datetime='2026-11-10T23:00:00',
+                                          timezone='America/New_York'), None)
+    assert result['end_datetime'] is None
+
+
 def test_end_datetime_optional(normalize):
     assert normalize.process_item(_item(), None)['end_datetime'] is None
 

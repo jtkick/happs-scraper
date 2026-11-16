@@ -181,6 +181,28 @@ def test_page_text_dates_only_apply_when_given():
     assert detail.get('rdates')
 
 
+def test_a_post_pager_s_dates_are_other_events():
+    text = ('Redtree Wine Party\nSaturday, November 7, 2026\n6:00 PM 11:00 PM\nCome sip and snack.\n'
+            'Previous\nPrevious\nMarch 7\nKaleidoscope\nNext\nNext\nJune 13\nBeyond Color')
+    data = extraction.finalize({'title': 'Redtree Wine Party', 'start_datetime': '2026-11-07T18:00:00'},
+                               page_text=text)
+    assert not data.get('rdates')
+
+
+def test_a_day_inside_the_event_s_own_run_is_not_another_occurrence():
+    text = 'Oct 31, 2026, 4:00 PM – Nov 01, 2026, 2:00 AM'
+    data = extraction.finalize({'title': 'Halloween Party', 'start_datetime': '2026-10-31T16:00:00-04:00',
+                                'end_datetime': '2026-11-01T02:00:00-05:00', 'timezone': 'America/New_York'},
+                               page_text=text)
+    assert not data.get('rdates')
+
+
+def test_an_extra_date_without_a_time_takes_the_start_time():
+    data = extraction.finalize({'title': 'Show', 'start_datetime': '2026-06-05T19:30:00'},
+                               page_text='Also on June 12, 2026 and June 19, 2026.')
+    assert data['rdates'] and all(r.endswith('T19:30:00') for r in data['rdates'])
+
+
 # ── Recurrence over a date span ───────────────────────────────────────────────
 
 def test_recurring_run_becomes_until_and_first_day():
