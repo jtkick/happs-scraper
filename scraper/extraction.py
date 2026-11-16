@@ -64,7 +64,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 12
+EXTRACTION_VERSION = 13
 
 
 @dataclass
@@ -488,6 +488,20 @@ def ticket_link(response, title: Optional[str] = None) -> Optional[str]:
     return None
 
 
+_VERSUS = re.compile(r'^(.+?)\s+(?:vs\.?|v\.?|versus)\s+\S', re.IGNORECASE)
+_AT = re.compile(r'^(.+?)\s+at\s+\S', re.IGNORECASE)
+
+
+def _away_games(events: list[dict]) -> None:
+    """On a team's schedule ("Cincinnati vs. Utah"), "Cincinnati at BYU" is a road game, somewhere else:
+    not a local event."""
+    home = {fold(m.group(1)) for e in events if (m := _VERSUS.match(e.get('title') or ''))}
+    for e in events:
+        m = _AT.match(e.get('title') or '')
+        if m and fold(m.group(1)) in home and not _VERSUS.match(e['title']):
+            e['drop_reason'] = 'away_game'
+
+
 NOT_FOUND_TITLE = re.compile(r'^\W*(?:page not found|not found|(?:error )?404\b|nothing found|page unavailable)',
                              re.IGNORECASE)
 _WORD = re.compile(r'[^\W\d_]{3,}')
@@ -573,6 +587,7 @@ def finalize_page(result: PageResult, html: str, *, context: Optional[dict] = No
         events.append(final)
     if not result.single:
         _dated_sessions(events)
+        _away_games(events)
     if not result.events and partial:
         final = finalize(partial, context=context)
         if final:

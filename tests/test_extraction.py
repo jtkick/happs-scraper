@@ -512,3 +512,12 @@ def test_a_date_only_start_takes_the_time_the_page_states(text, start, end):
     data = extraction.finalize({'title': title, 'start_datetime': start[:10], 'end_datetime': start[:10]},
                                page_text=text)
     assert (data['start_datetime'], data['end_datetime']) == (start, end)
+
+
+def test_a_team_schedule_s_road_games_are_dropped():
+    result = extraction.PageResult(single=False, events=[
+        ({'title': title, 'start_datetime': day}, None) for title, day in (
+            ('Cincinnati vs. Utah', '2026-10-31T15:45:00'), ('Cincinnati at BYU', '2026-11-28T12:00:00'),
+            ('Jazz at the Park', '2026-11-29T19:00:00'))])
+    events = extraction.finalize_page(result, '<html></html>')
+    assert [e.get('drop_reason') for e in events] == [None, 'away_game', None]
