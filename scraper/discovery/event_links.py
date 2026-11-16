@@ -107,6 +107,21 @@ def same_event(listing: dict, detail: dict) -> bool:
     return len(shared) >= SAME_EVENT_SHARE * len(words)
 
 
+def _days(event: dict) -> tuple[str, str]:
+    start = str(event.get('start_datetime') or '')[:10]
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', start):
+        return '', ''
+    end = str(event.get('end_datetime') or '')[:10]
+    return start, end if re.fullmatch(r'\d{4}-\d{2}-\d{2}', end) else start
+
+
+def same_dates(listing: dict, detail: dict) -> bool:
+    """The entry's dates agree with the page's (its start day, or its run inside the page's): a title
+    the listing got wrong ("Now Playing", a section heading) doesn't make the page some other event's."""
+    (ls, le), (ds, de) = _days(listing), _days(detail)
+    return bool(ls and ds) and (ls == ds or ds <= ls <= le <= de)
+
+
 def apply_curated(events: list[dict], links: list[dict]) -> list[str]:
     unmatched = []
     for link in links:

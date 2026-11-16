@@ -251,3 +251,18 @@ def test_page_text_starts_at_the_title():
     page = 'Sidebar: Brunch, recurring daily\nTrivia Night\nOctober 6\n' + 'x' * recurrence.PAGE_WINDOW + \
            '\nRelated: Karaoke every Friday'
     assert recurrence.extract('Trivia Night', '', page_text=page) is None
+
+
+@pytest.mark.parametrize('description', [
+    "You'll leave with a short daily practice and tools to use.",
+    'Every Night is a Bloody Good Time!',
+    'Daily specials on draft.',
+])
+def test_daily_said_of_something_else_is_no_rule(description):
+    assert _text(description) is None
+
+
+def test_a_footer_s_every_night_isn_t_the_event_s():
+    result = recurrence.extract('Stephanie Coffey', 'Live music.',
+                                page_text='Stephanie Coffey\nOur kitchen closes 1 hour before closing every night.')
+    assert result is None

@@ -162,3 +162,13 @@ def test_a_curators_page_may_be_on_another_site():
     data[follow.CURATED] = True
     assert follow.detail_url(data, LISTING) == 'https://tickets.test/jazz'
     assert follow.detail_reason(data) == 'required'
+
+
+def test_a_guessed_page_whose_dates_agree_is_the_entry_s_event_despite_its_title():
+    partial = {'title': 'Now Playing', 'start_datetime': '2026-10-09', 'end_datetime': '2026-10-31',
+               'url': 'https://venue.test/on-stage/dracula', event_links.GUESSED: True}
+    page = ('<html><head><script type="application/ld+json">{"@type": "TheaterEvent", "name": "Dracula",'
+            ' "startDate": "2026-10-07T19:30:00-04:00", "endDate": "2026-10-31T19:30:00-04:00"}</script>'
+            '</head><body></body></html>')
+    _, [event] = extraction.parse_page(response(page, partial['url']), kind='detail', partial=partial)
+    assert event['title'] == 'Dracula'

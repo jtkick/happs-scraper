@@ -252,8 +252,12 @@ _PATTERNS: list[tuple[re.Pattern, object, callable]] = [
      lambda m: ('weekly', {'byday': _days(m.group(1))})),
     (_PLURAL_SCHEDULE, True,
      lambda m: ('weekly', {'byday': _days(m.group(1))})),
-    (re.compile(r'\b(' + _LEAD + r')?(?:nightly|daily|every\s+(day|night))\b'),
-     lambda m: bool(m.group(1) or m.group(2)),
+    # "Daily" or "every night" said of the event ("open daily", "every night at 9"), not of something else
+    # ("a daily practice", "Every Night is a Bloody Good Time!"); only strong with a lead ("held daily"),
+    # since a page's footer says it too ("the kitchen closes an hour before closing every night").
+    (re.compile(r'\b(' + _LEAD + r')?(?:nightly|(?:daily|every\s+(?:day|night))(?=\s*(?:$|[.,;:!)\n–—-]|'
+                r'(?:from|at|until|through|thru|till|except|starting|beginning|in|this|of\s+the\s+week)\b|\d)))'),
+     lambda m: bool(m.group(1)),
      lambda m: ('daily', {})),
     (re.compile(r'\bevery\s+other\s+(week|month|year)\b'), lambda m: m.group(1) == 'week',
      lambda m: ({'week': 'weekly', 'month': 'monthly', 'year': 'yearly'}[m.group(1)], {'interval': 2})),

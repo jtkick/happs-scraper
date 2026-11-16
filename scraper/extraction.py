@@ -64,7 +64,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 14
+EXTRACTION_VERSION = 15
 
 
 @dataclass
@@ -134,16 +134,19 @@ def _parse_steps(response, kind, recipe, context, partial, use_ai):
                                                 pagination_css=recipe.get('pagination_css'))
         event_links.attach(response.text, response.url, events, result.links.details)
     elif partial and partial.get(event_links.GUESSED):
-        events = _same_event(events, partial, context)
+        dates_agree = any(event_links.same_dates(partial, data) for data, _ in result.events)
+        events = _same_event(events, partial, context, dates_agree)
     return result, events
 
 
-def _same_event(events: list[dict], partial: dict, context: Optional[dict]) -> list[dict]:
+def _same_event(events: list[dict], partial: dict, context: Optional[dict], dates_agree: bool = False) -> list[dict]:
     """
     A detail page found by a guessed link (scraper/discovery/event_links.py) only
-    counts where it shows the listing's event; otherwise the listing entry stands alone.
+    counts where it shows the listing's event (by its title, or by the page's own
+    dates agreeing with the entry's: the listing may have got the title wrong);
+    otherwise the listing entry stands alone.
     """
-    kept = [e for e in events if event_links.same_event(partial, e)]
+    kept = [e for e in events if dates_agree or event_links.same_event(partial, e)]
     if kept or not events:
         return kept
     final = finalize(partial, context=context)
