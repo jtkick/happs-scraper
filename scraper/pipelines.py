@@ -34,6 +34,27 @@ logger = logging.getLogger(__name__)
 
 # ── 100 · Normalize ───────────────────────────────────────────────────────────
 
+def _without_stale_offset(value: str, tz: str) -> str:
+    """
+    A time whose offset is the venue's from the other side of a clock change ("2026-11-01T12:00-04:00"
+    for noon on the day New York goes back to -05:00): the site worked the offset out for the wrong day,
+    and the clock time is what the page says. Read it in the venue's zone instead.
+    """
+    try:
+        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        zone = ZoneInfo(tz)
+    except (ValueError, KeyError):
+        return value
+    if moment.tzinfo is None:
+        return value
+    wall = moment.replace(tzinfo=None)
+    given, actual = moment.utcoffset(), wall.replace(tzinfo=zone).utcoffset()
+    if given == actual or abs(given - actual) != timedelta(hours=1):
+        return value
+    nearby = {(wall + timedelta(days=d)).replace(tzinfo=zone).utcoffset() for d in (-14, 14)}
+    return wall.isoformat() if given in nearby and len(nearby) == 2 else value
+
+
 class NormalizePipeline:
     _DATE_SETTINGS = {
         'RETURN_AS_TIMEZONE_AWARE': True,
@@ -153,6 +174,8 @@ class NormalizePipeline:
             if tz and getattr(value, 'tzinfo', 1) is None:
                 value = value.replace(tzinfo=ZoneInfo(tz))
             return value.isoformat()
+        if tz:
+            value = _without_stale_offset(str(value), tz)
         settings = {**self._DATE_SETTINGS, 'TIMEZONE': tz} if tz else self._DATE_SETTINGS
         parsed = dateparser.parse(str(value), settings=settings)
         if parsed is None:

@@ -1,6 +1,7 @@
 """WordPress + The Events Calendar (Tribe) — public REST API with every upcoming event."""
 from __future__ import annotations
 import json
+import re
 from html import unescape
 from typing import Optional
 
@@ -39,12 +40,15 @@ class WordPressTribe(Platform):
         address = ', '.join(filter(None, (venue.get(k) for k in ('address', 'city', 'state', 'zip'))))
         image = e.get('image') if isinstance(e.get('image'), dict) else {}
         values = (e.get('cost_details') or {}).get('values') or []
+        # A WordPress manual offset ("UTC-4") has no clock changes, so its UTC fields are an hour off half
+        # the year: then the local fields are read in the venue's zone instead.
+        fixed = bool(_FIXED_OFFSET.match(e.get('timezone') or ''))
         return {
             'title':            strip_tags(e.get('title')),
             'description':      strip_tags(e.get('description')),
             # UTC fields avoid depending on the site's configured zone.
-            'start_datetime':   _utc(e.get('utc_start_date')) or e.get('start_date'),
-            'end_datetime':     _utc(e.get('utc_end_date')) or e.get('end_date'),
+            'start_datetime':   (not fixed and _utc(e.get('utc_start_date'))) or _local(e.get('start_date')),
+            'end_datetime':     (not fixed and _utc(e.get('utc_end_date'))) or _local(e.get('end_date')),
             'url':              unescape(e['url']) if e.get('url') else None,
             'image_url':        image.get('url'),
             'ticket_price':     values[0] if values else (e.get('cost') or None),
@@ -53,8 +57,15 @@ class WordPressTribe(Platform):
             'location_address': address or None,
             'location_lat':     _float(venue.get('geo_lat')),
             'location_lon':     _float(venue.get('geo_lng')),
-            'timezone':         e.get('timezone') or None,
+            'timezone':         None if fixed else e.get('timezone') or None,
         }
+
+
+_FIXED_OFFSET = re.compile(r'^UTC(?:[+-]\d{1,2}(?::?\d{2})?)?$')
+
+
+def _local(value) -> Optional[str]:
+    return value.replace(' ', 'T') if value else None
 
 
 def _utc(value) -> Optional[str]:

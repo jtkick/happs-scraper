@@ -7,6 +7,7 @@ extractor runs first and costs nothing.
 
 from __future__ import annotations
 import logging
+import re
 from html import unescape
 from typing import Optional
 
@@ -96,6 +97,14 @@ def _text(value) -> Optional[str]:
     return unescape(value).strip() or None
 
 
+_PERCENT_PUNCT = re.compile(r'%(2[0-9A-F]|3[A-F]|40)', re.IGNORECASE)
+
+
+def _unquoted(title: Optional[str]) -> Optional[str]:
+    """A name some CMSs percent-encode punctuation in ("COMER, RONSTADT %26 FEIST")."""
+    return _PERCENT_PUNCT.sub(lambda m: chr(int(m.group(1), 16)), title) if title else title
+
+
 def _description(value) -> Optional[str]:
     """The description as text: unescaping can reveal markup (&lt;p&gt;)."""
     text = _text(value)
@@ -166,7 +175,7 @@ def _parse(node: dict) -> dict:
 
     lat, lon = _geo(node)
     return {
-        'title':            _text(node.get('name')),
+        'title':            _unquoted(_text(node.get('name'))),
         'description':      _description(node.get('description')),
         'start_datetime':   _text(node.get('startDate')),
         'end_datetime':     _text(node.get('endDate')),

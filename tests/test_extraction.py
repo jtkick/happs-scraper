@@ -422,3 +422,12 @@ def test_a_listing_s_one_model_event_beats_the_page_s_opengraph():
     _, [event] = extraction.parse_page(response, kind='listing', ai=ai)
     assert event['title'] == 'Art of the Chase' and event['description'] == 'A photography show.'
     assert event['image_url'] == 'https://venue.test/i.jpg' and event['extraction_method'] == 'ai'
+
+
+def test_structured_data_on_another_day_than_the_page_and_listing_loses():
+    text = 'Fright Night Kickoff\nSat, Oct 31\nJoin us this Halloween!\nStarts\n12:00 PM'
+    data = extraction.finalize(
+        {'title': 'Fright Night Kickoff', 'start_datetime': '2026-10-28T12:00:00-04:00',
+         'end_datetime': '2026-10-31T00:00:00-04:00', 'extraction_method': 'jsonld'},
+        partial={'title': 'Fright Night Kickoff', 'start_datetime': '2026-10-31T12:00:00-04:00'}, page_text=text)
+    assert data['start_datetime'] == '2026-10-31T12:00:00-04:00' and not data.get('end_datetime')

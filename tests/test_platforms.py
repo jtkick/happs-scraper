@@ -65,6 +65,15 @@ def test_tribe_parse_and_pagination():
 
 # ── Squarespace ───────────────────────────────────────────────────────────────
 
+def test_tribe_on_a_fixed_utc_offset_reads_local_times():
+    resp = feed({'events': [{
+        'title': 'Bengals Watch Party', 'start_date': '2026-11-01 12:00:00', 'end_date': '2026-11-01 16:00:00',
+        'utc_start_date': '2026-11-01 16:00:00', 'utc_end_date': '2026-11-01 20:00:00', 'timezone': 'UTC-4'}]})
+    [event] = WordPressTribe().parse(resp)
+    assert event['start_datetime'] == '2026-11-01T12:00:00' and event['end_datetime'] == '2026-11-01T16:00:00'
+    assert event['timezone'] is None
+
+
 def test_squarespace_only_matches_events_collections():
     home = html('<script src="https://static1.squarespace.com/x.js"></script><p>Welcome</p>')
     events = html('<script src="https://static1.squarespace.com/x.js"></script>'

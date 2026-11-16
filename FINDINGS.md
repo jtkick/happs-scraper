@@ -168,11 +168,11 @@ Each item names the page it was seen on. Move an item into `PLAN.md` or fix it, 
 - Left: a suffix that names neither the domain nor fits those patterns ("Seasons 52 | Wine Bar & Grill - Seasonal Restaurant…" on seasons52.com keeps the tagline). Stripping what the site's pages' titles have in common needs the listing's own title passed down
 - Where: `scraper/cleaners/title.py`
 
-### JSON-LD that contradicts the page's own date wins over it
-- Seen: vintageonrace.com/events/2026/10/fright-night-kickoff (images on `emp.imgix.net`, ordering on Toast) — JSON-LD `startDate` "2026-10-28T12:00:00-04:00" (the day the page was fetched, at the event's time) and `endDate` "2026-10-31T00:00:00-04:00" (midnight starting the real day); the page says "Sat, Oct 31 · Starts 12:00 PM". Thursday Night Football: JSON-LD 2026-10-28T15:00 → 2026-10-29T00:00, page "Thu, Oct 29". The crawl keeps the JSON-LD (start today, three-day span), overriding the listing entry's correct Oct 31 12 PM
-- Also (site capture, 2026-10-28): cliftonculturalarts.org/ccac-events/* — JSON-LD `startDate` "2026-11-13T04:00:00-05:00" for "Artist Collaborators' Breakfast", whose page says "Friday, Nov 13 / Time / 9:00 am - 11:00 am": the site writes the UTC clock time with the local offset, so every event is five hours early (8 events, all at 4 AM or so; "School's Out Art Camp" too). Here the date agrees and only the time is wrong
-- Should be: when a detail page's visible text names exactly one date (`dates.at_most_one_day`) and it disagrees with the structured start, while agreeing with the listing partial, trust the text. Likewise when the visible text states one start time and the structured time differs by a whole number of hours (a timezone slip), trust the text's clock time. A structured `endDate` at exactly local midnight is also a sign the platform means the day, not a time
-- Where: `scraper/extraction.py` `finalize` (where structured data, partial and page text meet)
+### JSON-LD written in UTC clock time with the local offset
+- Seen (site capture, 2026-10-28): cliftonculturalarts.org/ccac-events/* — JSON-LD `startDate` "2026-11-13T04:00:00-05:00" for "Artist Collaborators' Breakfast", whose page says "Friday, Nov 13 / Time / 9:00 am - 11:00 am": the site writes the UTC clock time with the local offset, so every event is five hours early (8 events). "2nd Sunday Showtime" (Nov 8, 2–3 PM) goes out at 9 AM
+- Fixed (2026-11-15): JSON-LD on another day than both the page text and the listing entry say loses to the entry (vintageonrace.com's start the day it was fetched); an offset from the other side of a clock change keeps its clock time (`pipelines._without_stale_offset`)
+- Left: the page's stated time isn't in `main_text` on cliftonculturalarts.org (it's in the event sidebar), so a check "the text states one start time and the structured one differs by whole hours: trust the text" needs the sidebar's text. A structured `endDate` at exactly local midnight also means the day, not a time
+- Where: `scraper/extraction.py` `finalize`, `scraper/text.py`
 
 ### "<date>, <time> – <date>, <time>" is read as two dates, not a range
 - Seen: igbysbar.com/events/unholy-spirits-halloween-party (Wix) prints "Oct 31, 2026, 4:00 PM – Nov 01, 2026, 2:00 AM"; `dates.extract` on that line returns `start 2026-10-31T00:00, rdates ['2026-11-01T00:00']`, and on the whole text "DJ from 10pm - 2am" gives an end before the start
@@ -277,11 +277,6 @@ Each item names the page it was seen on. Move an item into `PLAN.md` or fix it, 
 - `finalize` only looks for a time (`_fill_start`, the explicit-dates pass) when there's no start at all; a start without a time counts as complete
 - Should be: a start with no time on a single-event page takes a time stated for that date (or for the event's schedule) in its text; the end too when it's a range ("5-9pm")
 - Where: `scraper/extraction.py` `finalize` / `_fill_start` (treat a date-only start as missing its time), `dates.find_time`
-
-### The Events Calendar: `utc_start_date` is wrong on sites set to a fixed UTC offset
-- Seen (site capture, 2026-10-28): rhinegeist.com/wp-json/tribe/events/v1/events — the site's timezone is the WordPress manual offset `"UTC-4"` (no DST), and for 49 of 50 events `utc_start_date` disagrees with `start_date` by an hour: "Derry's Fall Carnival!" `start_date` 2026-10-31 12:00, `utc_start_date` 15:00 (11 AM in Cincinnati); "Bengals Watch Party" Nov 1 12:00 → 16:00 (11 AM EST). The event page says "Saturday, October 31, 2026 · 12:00 pm–6:00 pm" and its JSON-LD "2026-10-31T12:00:00-04:00". `wordpress_tribe._event` prefers the UTC fields ("UTC fields avoid depending on the site's configured zone"), so the listing sends every Rhinegeist event an hour early; entries complete enough not to be followed ship that way. The other four Tribe sites captured (IANA zones: America/New_York, America/Detroit) are consistent
-- Should be: when `timezone` is an IANA name, either field works; when it's a fixed offset (`UTC±N`), read `start_date`/`end_date` as local time in the source's timezone (the context's `America/New_York`), not the UTC fields
-- Where: `scraper/platforms/wordpress_tribe.py` `_event`, `_utc`
 
 ### OSM's multi-valued address tags go into the address as written
 - Seen (site capture, 2026-10-28, 3 of 569 OSM venues within 10 km): `addr:housenumber=3515;3516` → "3515;3516 Edwards Road, Cincinnati, OH, 45208" (Arthur's Cafe), "5945;5959 Kellogg Avenue" (Dead Low Brewing), and "3702;2900 Drake Avenue;Wasson Road" (The Establishment, a corner building with two streets). Every event from these sources carries that address, and geocoding or map links with it fail or land oddly

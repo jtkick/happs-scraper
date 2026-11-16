@@ -106,6 +106,18 @@ def test_explicit_offset_beats_venue_timezone(normalize):
     assert result['start_datetime'] == '2026-06-05T23:00:00+00:00'
 
 
+def test_an_offset_from_the_other_side_of_a_clock_change_keeps_the_clock_time(normalize):
+    result = normalize.process_item(
+        _item(start_datetime='2026-11-01T12:00:00-04:00', timezone='America/New_York'), None)
+    assert result['start_datetime'] == '2026-11-01T17:00:00+00:00'
+
+
+def test_an_offset_from_another_zone_is_kept(normalize):
+    result = normalize.process_item(
+        _item(start_datetime='2026-07-10T19:00:00-05:00', timezone='America/New_York'), None)
+    assert result['start_datetime'] == '2026-07-11T00:00:00+00:00'
+
+
 def test_naive_datetime_object_gets_venue_timezone(normalize):
     result = normalize.process_item(
         _item(start_datetime=datetime(2026, 6, 5, 19, 0), timezone='America/Chicago'), None)

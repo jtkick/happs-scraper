@@ -62,7 +62,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 7
+EXTRACTION_VERSION = 8
 
 
 @dataclass
@@ -278,6 +278,8 @@ def finalize(
     listing page that came out as one event, which is the page, not an event.
     """
     data = dict(data)
+    if partial and page_text:
+        _listing_day_if_page_agrees(data, partial, page_text)
     if (partial and partial.get('title') and data.get('extraction_method') == 'opengraph'
             and not partial.get(event_links.GUESSED) and not _share_words(data.get('title'), partial['title'])):
         # OpenGraph's title is the page's; the listing named the event. (A guessed link's page is
@@ -345,6 +347,17 @@ def finalize(
     matched = tag_matcher.match(data.get('title', ''), data.get('description', ''), ctx=data)
     data['tag_names'] = list(dict.fromkeys((data.get('tag_names') or []) + matched))
     return data
+
+
+def _listing_day_if_page_agrees(data: dict, partial: dict, page_text: str) -> None:
+    """Structured data that puts the event on another day than the page's text and its listing entry
+    both say (vintageonrace.com's JSON-LD dates it the day the page was fetched) loses to the entry."""
+    own, listed = parse_iso(data.get('start_datetime')), parse_iso(partial.get('start_datetime'))
+    if not own or not listed or own.date() == listed.date():
+        return
+    days = {day for day, _, _ in dates_extractor.find_dates(dates_extractor.after_title(page_text, data.get('title')))}
+    if days == {listed.date()}:
+        data['start_datetime'], data['end_datetime'] = partial['start_datetime'], partial.get('end_datetime')
 
 
 NOT_FOUND_TITLE = re.compile(r'^\W*(?:page not found|not found|(?:error )?404\b|nothing found|page unavailable)',

@@ -175,3 +175,9 @@ def test_strings_are_entity_decoded():
     assert event['description'] == 'Park & Tree Board meeting'
     assert event['location_title'] == 'Redtree Coffee & Art'
     assert event['ticket_url'] == 'https://tix.test/b?rid=1&exp=2'
+
+
+def test_percent_encoded_punctuation_in_a_name_is_decoded():
+    [event] = jsonld.extract_all(_page('{"@type": "Event", "name": "COMER, RONSTADT %26 FEIST", '
+                                       '"startDate": "2026-11-08T14:00:00"}'), URL)
+    assert event['title'] == 'COMER, RONSTADT & FEIST'
