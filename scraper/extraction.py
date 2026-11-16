@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from typing import Callable, Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from scraper import text as text_module
@@ -63,7 +64,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 9
+EXTRACTION_VERSION = 10
 
 
 @dataclass
@@ -116,6 +117,16 @@ def _parse_steps(response, kind, recipe, context, partial, use_ai):
             NOT_FOUND_TITLE.match(data.get('title') or '') for data, _ in result.events):
         # A soft 404 (served with 200): its listing entry stands as it was, as for a failed request.
         result.events = []
+    if not listing and result.single:
+        # The event's own page knows where its tickets are, better than its listing entry (whose
+        # link back into this site is no ticket link).
+        title = (result.events[0][0] if result.events else partial or {}).get('title')
+        ticket = ticket_link(response, title)
+        if ticket and result.events and not result.events[0][0].get('ticket_url'):
+            result.events[0][0]['ticket_url'] = ticket
+        elif ticket and not result.events and partial and (
+                not partial.get('ticket_url') or _same_host(partial['ticket_url'], response.url)):
+            partial = {**partial, 'ticket_url': ticket}
     events = finalize_page(result, response.text, context=context, partial=partial,
                            page_is_event=not (listing and result.single))
     if listing:
@@ -413,6 +424,54 @@ def _dated_sessions(events: list[dict]) -> None:
         if key in sessions:
             e.update(RECURRENCE_DEFAULTS)
             e['recurrence_byday'] = []
+
+
+_TICKET_TEXT = re.compile(r'^\W*(?:(?:buy|get|purchase|book|order)\s+(?:your\s+)?)?tickets?(?:\s+(?:now|here|online))?\W*$',
+                          re.IGNORECASE)
+TICKET_HOSTS = ('cincyticket.com', 'etix.com', 'ticketweb.com', 'eventbrite.com', 'dice.fm', 'seetickets.us',
+                'ticketmaster.com', 'axs.com', 'tixr.com', 'showclix.com', 'ticketleap.com', 'universe.com',
+                'brownpapertickets.com', 'ludus.com', 'simpletix.com', 'tix.com', 'eventim.com', 'humanitix.com')
+_SLUG_STOP = frozenset({'tickets', 'ticket', 'event', 'events', 'the', 'and', 'with', 'for', 'presents', 'live'})
+
+
+def _host(url: str) -> str:
+    return (urlparse(url).hostname or '').removeprefix('www.')
+
+
+def _same_host(a: str, b: str) -> bool:
+    return _host(a) == _host(b)
+
+
+def _about_another_event(url: str, title: str, page_url: str) -> bool:
+    """A link whose slug names an event ("rumble-at-rhinegeist-nightmare-on-elm-street") sharing no word
+    with this one's title, the site's name aside: a promotion for something else."""
+    slug = next((seg for seg in reversed(urlparse(url).path.split('/')) if seg), '')
+    parts = [w for w in re.split(r'[-_]+', slug.casefold()) if len(w) >= 3 and not w.isdigit()]
+    if len(parts) < 3:
+        return False
+    site = re.sub(r'[^a-z0-9]', '', _host(page_url).split('.')[0])
+    words = {w for w in parts if w not in _SLUG_STOP and w not in site}
+    return not words & {w.casefold() for w in _WORD.findall(title or '')}
+
+
+def ticket_link(response, title: Optional[str] = None) -> Optional[str]:
+    """An event page's ticket link: the first anchor outside the site's header, nav and footer saying
+    "Tickets" that leaves this site (or names tickets in its path), and isn't about another event."""
+    if any(_host(response.url) == h or _host(response.url).endswith('.' + h) for h in TICKET_HOSTS):
+        return None     # the page is the ticket page
+    for anchor in response.xpath('//a[@href][not(ancestor::nav or ancestor::header or ancestor::footer)]'):
+        href = anchor.attrib.get('href', '').strip()
+        if not href or href.startswith(('#', 'mailto:', 'tel:', 'javascript:')):
+            continue
+        url = response.urljoin(href)
+        text = re.sub(r'\(.*?\)', ' ', ' '.join(t.strip() for t in anchor.css('::text').getall() if t.strip()))
+        if not _TICKET_TEXT.match(text):
+            continue
+        if _same_host(url, response.url) and 'ticket' not in urlparse(url).path.casefold():
+            continue
+        if not _about_another_event(url, title, response.url):
+            return url
+    return None
 
 
 NOT_FOUND_TITLE = re.compile(r'^\W*(?:page not found|not found|(?:error )?404\b|nothing found|page unavailable)',

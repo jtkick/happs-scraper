@@ -462,3 +462,34 @@ def test_a_listing_s_dated_sessions_of_one_series_are_one_offs():
     ] + [({'title': 'Trivia', 'start_datetime': '2026-10-06T20:00:00', 'description': 'Every Tuesday.'}, None)])
     events = extraction.finalize_page(result, '<html></html>')
     assert [e['recurrence_freq'] for e in events] == ['none', 'none', 'weekly']
+
+
+# ── Ticket links ──────────────────────────────────────────────────────────────
+
+def _page(body, url='https://venue.test/shows/mockball'):
+    from scrapy.http import HtmlResponse
+    return HtmlResponse(url=url, body=f'<html><body>{body}</body></html>'.encode(), encoding='utf-8')
+
+
+def test_the_event_page_s_first_ticket_link_outside_the_site_chrome():
+    page = _page('<header><a href="https://box.cincyticket.com">Buy Tickets</a></header>'
+                 '<h1>Mockball</h1><a href="https://www.cincyticket.com/e.asp?evt=7894">BUY TICKETS</a>'
+                 '<aside><a href="https://www.cincyticket.com/e.asp?evt=7724">BUY TICKETS</a></aside>')
+    assert extraction.ticket_link(page, 'Mockball') == 'https://www.cincyticket.com/e.asp?evt=7894'
+
+
+@pytest.mark.parametrize('body', [
+    '<a href="/events">Tickets</a>',                                                    # the site's own menu
+    '<a href="https://events.humanitix.com/rumble-at-venue-nightmare-on-elm">Get Tickets</a>',  # another event
+    '<a href="https://www.eventbrite.com/e/mockball-tickets-1">Share</a>',              # doesn't say tickets
+])
+def test_links_that_aren_t_this_event_s_tickets(body):
+    assert extraction.ticket_link(_page(body), 'Mockball') is None
+
+
+def test_a_page_s_ticket_link_replaces_a_listing_link_back_into_the_site():
+    page = _page('<a href="https://www.eventbrite.com/e/mockball-tickets-1">Tickets (opens in a new tab)</a>')
+    partial = {'title': 'Mockball', 'start_datetime': '2026-10-30T18:00', 'url': page.url,
+               'ticket_url': 'https://venue.test/shows'}
+    _, [event] = extraction.parse_page(page, kind='detail', partial=partial)
+    assert event['ticket_url'] == 'https://www.eventbrite.com/e/mockball-tickets-1'

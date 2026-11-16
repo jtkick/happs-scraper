@@ -24,9 +24,12 @@ import functools
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date
+from html import unescape
 from typing import Callable, Optional
+from urllib.parse import urljoin, urlsplit
 
 from scraper.text import main_text
 from scraper.util import fold
@@ -152,14 +155,37 @@ def extract_many(html: str, base_url: str, api_key: str, *,
         return AIResult(truncated=truncated)
 
     haystack = fold(text)
+    hrefs = _hrefs(html, base_url)
     events = []
     for event in data.get('events', []):
         clean = {k: v for k, v in event.items() if v not in (None, '')}
         evidence = fold(clean.get('evidence', ''))
         if not evidence or evidence not in haystack:
             clean['drop_reason'] = 'ai_unverified'
+        for key in ('ticket_url', 'rsvp_url'):
+            # The model sees the text, not the links: one it gives that isn't on the page is made up,
+            # and the page's own URL is where it read about the event, not where tickets are.
+            link = clean.get(key)
+            if link and (_same_page(link, base_url) or _link_key(link) not in hrefs):
+                del clean[key]
         events.append(clean)
     return AIResult(events=events, truncated=truncated)
+
+
+_HREF = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _link_key(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.netloc.lower().removeprefix('www.')}{parts.path.rstrip('/')}" + (f'?{parts.query}' if parts.query else '')
+
+
+def _same_page(url: str, page: str) -> bool:
+    return _link_key(url) == _link_key(page)
+
+
+def _hrefs(html: str, base_url: str) -> set[str]:
+    return {_link_key(urljoin(base_url, unescape(h))) for h in _HREF.findall(html or '')}
 
 
 def extractor(api_key: str, *, venue: Optional[str] = None, today: Optional[date] = None,

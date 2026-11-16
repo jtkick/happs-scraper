@@ -12,7 +12,7 @@ PAGE_TEXT = (
     'Friday June 5 — The Blue Notes, doors 7pm. '
     'Saturday June 6 — Open Mic from 8pm, free entry. '
 )
-HTML = f'<html><body><article><p>{PAGE_TEXT}</p></article></body></html>'
+HTML = f'<html><body><article><p>{PAGE_TEXT}</p><a href="https://t.test/rsvp">RSVP</a></article></body></html>'
 
 
 class FakeMessages:
@@ -50,6 +50,13 @@ def test_returns_every_event_and_drops_nulls(stub):
     assert 'description' not in result.events[0]
     assert (result.events[1]['ticket_price'], result.events[1]['rsvp_url']) == (0, 'https://t.test/rsvp')
     assert not any('drop_reason' in e for e in result.events)
+
+
+def test_links_the_page_doesn_t_have_are_dropped(stub):
+    stub({'events': [event('Open Mic', 'Saturday June 6 — Open Mic from 8pm', ticket_url='https://t.test/',
+                           rsvp_url='https://made.up/rsvp')]})
+    [result] = ai.extract_many(HTML, 'https://t.test/', 'key').events
+    assert 'ticket_url' not in result and 'rsvp_url' not in result
 
 
 def test_evidence_not_on_page_is_flagged(stub):
