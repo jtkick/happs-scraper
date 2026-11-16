@@ -166,7 +166,8 @@ class NormalizePipeline:
 _NON_EVENT_TITLE = re.compile(
     r'^(?:opening|business|store|kitchen|office)?\s*hours\b|\bgift\s*cards?\b|\bmenus?$|'
     r'\bbook\s+a\s+table\b|\bprivate\s+(?:hire|events?|parties)\b|\breservations?$|'
-    r'^(?:closed|we are closed|temporarily closed)\b|\bcareers?\b|\bjobs?\b',
+    r'^(?:closed|we are closed|temporarily closed)\b|\bcareers?\b|\bjobs?\b|'
+    r'^(?:page not found|not found|(?:error )?404)$',
     re.IGNORECASE,
 )
 # A slot held open on a calendar, not an event: the whole title is the placeholder.

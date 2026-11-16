@@ -62,7 +62,7 @@ PER_EVENT_KEYS = frozenset({'title', 'start_datetime', 'end_datetime'})
 
 # Bump whenever a change makes the same page parse differently: pages parsed by
 # an older version are fetched again instead of being skipped as unchanged.
-EXTRACTION_VERSION = 6
+EXTRACTION_VERSION = 7
 
 
 @dataclass
@@ -111,6 +111,10 @@ def _parse_steps(response, kind, recipe, context, partial, use_ai):
         use_ai = False
     listing = kind == 'listing'
     result = yield from _extract_steps(response.text, response.url, recipe_events, use_ai, listing)
+    if partial and not listing and result.single and any(
+            NOT_FOUND_TITLE.match(data.get('title') or '') for data, _ in result.events):
+        # A soft 404 (served with 200): its listing entry stands as it was, as for a failed request.
+        result.events = []
     events = finalize_page(result, response.text, context=context, partial=partial,
                            page_is_event=not (listing and result.single))
     if listing:
@@ -239,8 +243,14 @@ def _extract_steps(html, url, recipe_events, use_ai, listing=False):
                 if 'drop_reason' in event and not page:
                     page = _tag(event, 'ai')
                 elif 'drop_reason' not in event:
-                    merge(page, event)
-                    page.setdefault('extraction_method', 'ai')
+                    if listing and page.get('extraction_method') in ('opengraph', 'inline_json'):
+                        # A listing's OpenGraph or page-level JSON describes the page, not the event
+                        # the model found on it: that only fills the event's gaps (its image).
+                        page, base = _tag(dict(event), 'ai'), page
+                        merge(page, {k: v for k, v in base.items() if k not in ('extraction_method', 'title', 'description')})
+                    else:
+                        merge(page, event)
+                        page.setdefault('extraction_method', 'ai')
 
     if page:
         result.events = [(page, jl_node)]
@@ -268,6 +278,11 @@ def finalize(
     listing page that came out as one event, which is the page, not an event.
     """
     data = dict(data)
+    if (partial and partial.get('title') and data.get('extraction_method') == 'opengraph'
+            and not partial.get(event_links.GUESSED) and not _share_words(data.get('title'), partial['title'])):
+        # OpenGraph's title is the page's; the listing named the event. (A guessed link's page is
+        # judged by its own title, so that one stays.)
+        data['title'] = partial['title']
     for key, value in (partial or {}).items():
         if value is not None and not data.get(key):
             data[key] = value
@@ -330,6 +345,15 @@ def finalize(
     matched = tag_matcher.match(data.get('title', ''), data.get('description', ''), ctx=data)
     data['tag_names'] = list(dict.fromkeys((data.get('tag_names') or []) + matched))
     return data
+
+
+NOT_FOUND_TITLE = re.compile(r'^\W*(?:page not found|not found|(?:error )?404\b|nothing found|page unavailable)',
+                             re.IGNORECASE)
+_WORD = re.compile(r'[^\W\d_]{3,}')
+
+
+def _share_words(a: Optional[str], b: Optional[str]) -> bool:
+    return bool({w.casefold() for w in _WORD.findall(a or '')} & {w.casefold() for w in _WORD.findall(b or '')})
 
 
 _PAGER_WORD = re.compile(r'^\W*(?:previous|prev|next|older|newer)(?: (?:event|post))?\W*$', re.IGNORECASE)

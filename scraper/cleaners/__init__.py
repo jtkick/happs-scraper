@@ -9,10 +9,11 @@ Functions are applied left-to-right; each receives the output of the previous.
 ctx is the full EventItem dict with all other fields already normalized.
 """
 from __future__ import annotations
-from .title import strip_venue_suffix, strip_trailing_punctuation
+from .title import strip_site_suffix, strip_trailing_punctuation, strip_venue_suffix
 
 TITLE_CLEANERS: list = [
     strip_venue_suffix,
+    strip_site_suffix,
     strip_trailing_punctuation,
 ]
 

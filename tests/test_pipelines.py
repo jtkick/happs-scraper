@@ -399,6 +399,7 @@ def test_review_threshold_is_configurable():
     ({'title': 'Opening Hours'},                             'not_an_event'),
     ({'title': 'Gift Cards'},                                'not_an_event'),
     ({'title': 'Private Events'},                            'not_an_event'),
+    ({'title': 'Page not found'},                            'not_an_event'),
     ({'title': 'TBA'},                                       'placeholder_title'),
     ({'title': 'To Be Announced!'},                          'placeholder_title'),
     ({'title': '- Private -'},                               'placeholder_title'),
@@ -448,3 +449,18 @@ def test_pipelines_read_settings_from_the_crawler():
     assert FingerprintDedupPipeline.from_crawler(crawler).name == 'generic'
     submit = APISubmitPipeline.from_crawler(crawler)
     assert submit.client is client and not submit.owns_client
+
+
+@pytest.mark.parametrize('title, url, expected', [
+    ('Drag Bingo at Winterhaus | Fountain Square', 'https://myfountainsquare.com/series/x/', 'Drag Bingo at Winterhaus'),
+    ('Burning Love — Redtree Coffee', 'https://www.redtreecoffeeandart.com/c/x', 'Burning Love'),
+    ('Murder Mystery Show | February 26th', 'https://www.deadlowbrewing.com/event/x/', 'Murder Mystery Show'),
+    ('MIRACLE | Book Your Experience Today', 'https://www.thatshiningbar.com/miracle', 'MIRACLE'),
+    ('Gil Shaham | Official Ticket Source | Cincinnati Arts', 'https://www.cincinnatiarts.org/e/1', 'Gil Shaham'),
+    ('Hip-Hop Night - Live', 'https://venue.test/x', 'Hip-Hop Night - Live'),
+    ('Fountain Square | Ice Rink', 'https://myfountainsquare.com/', 'Fountain Square | Ice Rink'),
+    ('Rhinegeist', 'https://rhinegeist.com/', 'Rhinegeist'),
+])
+def test_site_suffixes_are_stripped_from_titles(title, url, expected):
+    from scraper.cleaners import clean_title
+    assert clean_title(title, {'url': url}) == expected

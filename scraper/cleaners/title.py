@@ -13,6 +13,7 @@ Add new functions here, then register them in scraper/cleaners/__init__.py.
 """
 from __future__ import annotations
 import re
+from urllib.parse import urlparse
 
 # Separators that commonly join an event title to a venue/brand suffix
 _SEP = re.compile(r'\s*(?:—|–|-{1,2}|/|\|)\s*')
@@ -56,6 +57,56 @@ def strip_venue_suffix(title: str, ctx: dict) -> str:
             return title[:sep_spans[-1].start()].strip()
 
     return title
+
+
+# A separator between a title and what a site appends to it; a hyphen only with spaces ("Hip-Hop" stays).
+_SUFFIX_SEP = re.compile(r'\s+-{1,2}\s+|\s*[|—–·]\s*')
+_CALL_TO_ACTION = re.compile(
+    r'^(?:(?:book|buy|get|reserve|register|rsvp|order|purchase)\s+(?:your|now|today|tickets?|here|a|an)\b|'
+    r'official\s+(?:ticket\s+source|tickets?|site|website)$|tickets?$)', re.IGNORECASE)
+_MONTH = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
+          r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?')
+_DATE_ONLY = re.compile(
+    r'^(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+)?(?:' + _MONTH + r'\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|'
+    r'\d{1,2}(?:st|nd|rd|th)?\s+' + _MONTH + r'(?:,?\s+\d{4})?|\d{1,2}/\d{1,2}(?:/\d{2,4})?)$', re.IGNORECASE)
+
+
+def _letters(text: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', text.casefold())
+
+
+def _site_names(ctx: dict) -> set[str]:
+    """The site's name as letters, from its domains ("myfountainsquare" for myfountainsquare.com)."""
+    names = set()
+    for key in ('url', 'source_url'):
+        host = (urlparse(ctx.get(key) or '').hostname or '').removeprefix('www.')
+        if host:
+            names.add(_letters(host.rsplit('.', 1)[0].rsplit('.', 1)[-1]))
+    return {n for n in names if len(n) >= 4}
+
+
+def _site_suffix(segment: str, sites: set[str]) -> bool:
+    letters = _letters(segment)
+    if _DATE_ONLY.match(segment.strip()) or _CALL_TO_ACTION.match(segment.strip()):
+        return True
+    return len(letters) >= 4 and any(letters in site or site in letters for site in sites)
+
+
+def strip_site_suffix(title: str, ctx: dict) -> str:
+    """
+    Remove what the site appends to every page's title: its own name ("Jazz at Winterhaus | Fountain
+    Square" on myfountainsquare.com), the date ("Murder Mystery Show | February 26th") or a call to action
+    ("MIRACLE | Book Your Experience Today"). The first segment always stays.
+    """
+    sites = _site_names(ctx)
+    while True:
+        seps = list(_SUFFIX_SEP.finditer(title))
+        if not seps:
+            return title
+        last = seps[-1]
+        if not _site_suffix(title[last.end():], sites) or not title[:last.start()].strip():
+            return title
+        title = title[:last.start()].rstrip()
 
 
 def strip_trailing_punctuation(title: str, ctx: dict) -> str:

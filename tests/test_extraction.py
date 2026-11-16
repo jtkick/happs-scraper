@@ -387,3 +387,38 @@ def test_merge_enriched_upgrades_only_longer_descriptions():
     assert base['description'] == 'Short blurb'
     extraction.merge_enriched(base, {'description': 'A considerably longer blurb'})
     assert base['description'] == 'A considerably longer blurb'
+
+
+# ── Titles ────────────────────────────────────────────────────────────────────
+
+def test_a_soft_404_keeps_the_listing_entry():
+    from scrapy.http import HtmlResponse
+    partial = {'title': 'Adult Archery', 'start_datetime': '2026-11-01T14:00:00-04:00',
+               'url': 'https://venue.test/event/archery/'}
+    page = ('<html><head><meta property="og:title" content="Page not found - Venue">'
+            '<meta property="og:description" content="Sorry."></head><body></body></html>')
+    response = HtmlResponse(url=partial['url'], body=page.encode(), encoding='utf-8')
+    _, [event] = extraction.parse_page(response, kind='detail', partial=partial)
+    assert event['title'] == 'Adult Archery' and not event.get('description')
+
+
+def test_an_opengraph_title_with_nothing_in_common_yields_to_the_listing_s():
+    data = extraction.finalize({'title': 'Book Your Experience Today', 'extraction_method': 'opengraph'},
+                               partial={'title': 'Miracle at the Overlook', 'start_datetime': '2026-11-15'})
+    assert data['title'] == 'Miracle at the Overlook'
+    data = extraction.finalize({'title': 'Miracle | Overlook Lodge', 'extraction_method': 'opengraph'},
+                               partial={'title': 'Miracle at the Overlook', 'start_datetime': '2026-11-15'})
+    assert data['title'] == 'Miracle | Overlook Lodge'
+
+
+def test_a_listing_s_one_model_event_beats_the_page_s_opengraph():
+    from scrapy.http import HtmlResponse
+    page = ('<html><head><meta property="og:title" content="Events | The ABB">'
+            '<meta property="og:description" content="We take part in events every year.">'
+            '<meta property="og:image" content="https://venue.test/i.jpg"></head><body></body></html>')
+    response = HtmlResponse(url='https://venue.test/events', body=page.encode(), encoding='utf-8')
+    ai = lambda html, url: AIResult(events=[{'title': 'Art of the Chase', 'start_datetime': '2026-09-26',
+                                             'description': 'A photography show.', 'evidence': 'x'}])
+    _, [event] = extraction.parse_page(response, kind='listing', ai=ai)
+    assert event['title'] == 'Art of the Chase' and event['description'] == 'A photography show.'
+    assert event['image_url'] == 'https://venue.test/i.jpg' and event['extraction_method'] == 'ai'
